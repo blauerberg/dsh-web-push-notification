@@ -1,8 +1,8 @@
 # dsh-web-push-notification
 
-Receive notifications from a DeepSeek Harness web profile even when its page
-is closed. Notifications cover completed or stopped tasks, approval requests,
-and questions that need a response.
+Get browser notifications when a DeepSeek Harness task completes or stops, or
+needs your approval or response. Web Push delivers them even when the page is
+not open.
 
 ## Before you start
 
