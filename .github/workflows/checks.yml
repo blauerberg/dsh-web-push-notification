@@ -1,0 +1,75 @@
+name: Checks
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+    outputs:
+      dsh_ref:
+        description: DeepSeek Harness release used by the checks
+        value: ${{ jobs.check.outputs.dsh_ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      dsh_ref: ${{ steps.dsh-release.outputs.ref }}
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.22.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install plugin dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Check formatting
+        run: pnpm run format:check
+
+      - name: Run lint
+        run: pnpm run lint
+
+      - name: Resolve latest DeepSeek Harness release
+        id: dsh-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tags="$(gh api --paginate 'repos/deepseek-ai/deepseek-harness/releases?per_page=100' --jq '.[] | select(.draft == false) | .tag_name')"
+          ref="$(printf '%s\n' "$tags" | sed -nE '/^dsh-v[0-9]+\.[0-9]+\.[0-9]+$/p' | sort -V | tail -n 1)"
+          if [ -z "$ref" ]; then
+            ref="$(printf '%s\n' "$tags" | sed -nE '/^dsh-v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$/p' | sort -V | tail -n 1)"
+          fi
+          test -n "$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Install selected DeepSeek Harness packages
+        run: |
+          node .github/set-dsh-version.mjs "${{ steps.dsh-release.outputs.ref }}"
+          pnpm install --no-frozen-lockfile
+
+      - name: Run typecheck
+        run: pnpm run typecheck
+
+      - name: Run unit tests
+        run: pnpm run test
+
+      - name: Build distribution
+        run: pnpm run build

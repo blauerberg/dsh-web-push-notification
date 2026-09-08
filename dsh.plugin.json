@@ -1,0 +1,12 @@
+{
+  "name": "dsh-web-push-notification",
+  "description": "Web Push notifications for DeepSeek Harness",
+  "version": "0.1.0",
+  "entry": {
+    "name": "dsh-web-push-notification",
+    "inject": ["connection", "webServer", "sessions"]
+  },
+  "client": {
+    "platform": "web"
+  }
+}

@@ -1,0 +1,66 @@
+name: Package release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+    with:
+      ref: ${{ github.event.release.tag_name }}
+    permissions:
+      contents: read
+
+  package:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.22.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install selected DeepSeek Harness packages
+        run: |
+          node .github/set-dsh-version.mjs "${{ needs.checks.outputs.dsh_ref }}"
+          pnpm install --no-frozen-lockfile
+
+      - name: Build distribution
+        run: pnpm run build
+
+      - name: Match package version to release tag
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "v${version}" = "${{ github.event.release.tag_name }}"
+
+      - name: Pack npm release
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
+          mv dist/dsh-web-push-notification-*.tgz dist/dsh-web-push-notification.tgz
+
+      - name: Upload npm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: dist/*.tgz
+          if-no-files-found: error
+
+      - name: Attach package to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*.tgz --clobber
