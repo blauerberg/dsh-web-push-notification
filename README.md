@@ -4,15 +4,6 @@ Get browser notifications when a DeepSeek Harness task completes or stops, or
 needs your approval or response. Web Push delivers them even when the page is
 not open.
 
-## Before you start
-
-- A secure browser context. Use HTTPS, except for local loopback access.
-- If another device needs access to the profile, use an HTTPS endpoint. A
-  reverse proxy, such as Tailscale Serve, can provide it.
-
-On iOS and iPadOS, install the web profile on the Home Screen before enabling
-Web Push. The plugin requests notification permission from its Settings card.
-
 ## Install
 
 These examples use the `web` profile. Replace `web` with your profile name in
@@ -75,6 +66,10 @@ Start the profile:
 ```sh
 dsh --profile web
 ```
+
+Open the profile over HTTPS unless you access it through a local loopback
+address. On iOS and iPadOS, add the profile to the Home Screen before enabling
+Web Push.
 
 Then open **Settings → Notifications**, enable Web Push, and use **Send test**.
 
