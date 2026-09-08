@@ -25,15 +25,18 @@ dsh plugin --profile web add github:blauerberg/dsh-web-push-notification
 ```
 
 Git installs fetch the source and build `lib/` with the package's `prepare`
-script. With pnpm 10 or later, the first install fails until that script is
-allowed to run. Add the package key printed by pnpm to the profile's workspace
-file (keep any existing `allowBuilds` entries), then rerun the install:
+script. With pnpm 10 or later, allow this repository's build in the profile's
+workspace file (keep any existing `allowBuilds` entries):
 
 ```yaml
 # $DSH_HOME/profiles/web/pnpm-workspace.yaml
 allowBuilds:
-  dsh-web-push-notification: true
+  'dsh-web-push-notification@git+https://github.com/blauerberg/dsh-web-push-notification.git': true
 ```
+
+This repository-level key also applies when the plugin is updated. It allows
+install-time code from future revisions of this repository. To approve only
+one revision, use the commit-specific key printed by pnpm instead.
 
 The DSH CLI creates this profile-local file when the profile is initialized and
 does not overwrite existing edits. It is separate from this repository's
