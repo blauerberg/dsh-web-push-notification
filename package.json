@@ -63,6 +63,7 @@
   ],
   "scripts": {
     "build": "node build.mjs",
+    "prepare": "pnpm run build",
     "format": "biome format --write",
     "format:check": "biome ci --linter-enabled=false --assist-enabled=false",
     "lint": "biome lint",
