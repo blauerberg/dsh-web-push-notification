@@ -32,12 +32,8 @@ does not overwrite existing edits. It is separate from this repository's
 tracked `pnpm-workspace.yaml`; there is no separate override file for
 `allowBuilds`.
 
-```sh
-dsh plugin --profile web add \
-  github:blauerberg/dsh-web-push-notification#1ac9f434dbc117866a60fd69dc19ddbb4e16da07
-```
-
-Both hashes above identify `v0.1.0`. Installing another revision requires its
+Save the file, then rerun the install command above. The commit hash used in
+both places identifies `v0.1.0`. Installing another revision requires its
 commit hash in both places.
 
 Add the plugin configuration to
