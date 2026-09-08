@@ -75,18 +75,17 @@ dsh --profile web
 
 Then open **Settings → Notifications**, enable Web Push, and use **Send test**.
 
-## Choose your notifications
+## Notification behavior
 
-The settings card lets each browser or installed PWA choose which events to
-receive; settings are stored per browser or PWA, and all event types are
-enabled by default:
+Each browser or installed PWA stores its notification settings separately. All
+event types are enabled by default:
 
 - Task completed
 - Task stopped or failed
 - Approval required
 - Response required
 
-You can also choose the notification body:
+A notification can include full content or a summary:
 
 - **Full content** is the default and includes relevant context such as the
   latest response, question, or approval reason.
