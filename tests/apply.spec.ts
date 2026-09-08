@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { apply } from '../src/index.ts'
@@ -28,6 +29,7 @@ describe('host plugin registration', () => {
     const routes: Array<{ path: string }> = []
     const disposers: Array<() => void> = []
     const ctx = {
+      baseUrl: `${pathToFileURL(root).href}/`,
       connection: { requestRejection: () => undefined },
       webServer: {
         register(route: { path: string }) {
@@ -48,9 +50,9 @@ describe('host plugin registration', () => {
     }
     apply(ctx as never, {
       vapidSubject: 'mailto:test@example.invalid',
-      storagePath: join(root, 'state.json'),
       maxRequestBodyBytes: 1024,
     })
+    expect(existsSync(join(root, 'web-push.json'))).toBe(true)
     expect(routes.map((route) => route.path)).toEqual([
       '/__dsh/web-push/config',
       '/__dsh/web-push/sw.js',

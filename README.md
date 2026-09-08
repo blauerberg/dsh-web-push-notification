@@ -34,11 +34,13 @@ Add the plugin configuration to
 - id: dsh-web-push-notification
   config:
     vapidSubject: 'mailto:admin@example.com'
-    storagePath: !!js dshHomePath('profiles', 'web', 'web-push.json')
 ```
 
 `vapidSubject` is the VAPID contact URI; use either a `mailto:` URI or an
 `https:` URL. It is independent of the address used to open DeepSeek Harness.
+Subscriptions and VAPID keys are stored in
+`$DSH_HOME/profiles/<profile>/web-push.json` by default. Set `storagePath` in
+the plugin configuration only to use another location.
 The plugin uses the Harness Web profile's browser authentication and trusted
 host configuration.
 

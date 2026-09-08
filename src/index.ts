@@ -3,6 +3,7 @@ import z from '@deepseek-ai/schemastery'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { fileURLToPath } from 'node:url'
 import { deliver } from './delivery.ts'
 import { notificationForEvent } from './notification.ts'
 import { createPushRoutes } from './routes.ts'
@@ -15,13 +16,13 @@ export const inject = ['connection', 'webServer', 'sessions']
 
 export interface Config {
   vapidSubject: string
-  storagePath: string
+  storagePath?: string
   maxRequestBodyBytes: number
 }
 
 export const Config: z<Config> = z.object({
   vapidSubject: z.string().required(),
-  storagePath: z.string().required(),
+  storagePath: z.string(),
   maxRequestBodyBytes: z
     .natural()
     .min(1024)
@@ -30,7 +31,8 @@ export const Config: z<Config> = z.object({
 
 export function apply(ctx: Context, config?: Config): void {
   const resolved = Config(config)
-  const store = PushStore.open(resolved.storagePath, generateVapidKeys)
+  const storagePath = resolved.storagePath ?? fileURLToPath(new URL('web-push.json', ctx.baseUrl))
+  const store = PushStore.open(storagePath, generateVapidKeys)
   const sender = createWebPushSender(resolved.vapidSubject, {
     publicKey: store.publicKey,
     privateKey: store.privateKey,
