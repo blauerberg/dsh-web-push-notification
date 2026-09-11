@@ -16,29 +16,8 @@ each command and path.
 Install the plugin into the profile you want to notify:
 
 ```sh
-dsh plugin --profile web add \
-  github:blauerberg/dsh-web-push-notification#1ac9f434dbc117866a60fd69dc19ddbb4e16da07
+dsh plugin --profile web add dsh-web-push-notification@0.1.1
 ```
-
-Git installs fetch the source and build `lib/` with the package's `prepare`
-script. With pnpm 10 or later, the first command may stop because that build is
-not allowed. Add the revision-specific key to the profile's workspace file
-(keep any existing `allowBuilds` entries):
-
-```yaml
-# $DSH_HOME/profiles/web/pnpm-workspace.yaml
-allowBuilds:
-  'dsh-web-push-notification@https://codeload.github.com/blauerberg/dsh-web-push-notification/tar.gz/1ac9f434dbc117866a60fd69dc19ddbb4e16da07': true
-```
-
-The DSH CLI creates this profile-local file when the profile is initialized and
-does not overwrite existing edits. It is separate from this repository's
-tracked `pnpm-workspace.yaml`; there is no separate override file for
-`allowBuilds`.
-
-Save the file, then rerun the install command above. The commit hash used in
-both places identifies `v0.1.0`. Installing another revision requires its
-commit hash in both places.
 
 Add the plugin configuration to
 `$DSH_HOME/profiles/web/cordis.patch.yml`:
