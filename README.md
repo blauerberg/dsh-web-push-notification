@@ -1,5 +1,9 @@
 # dsh-web-push-notification
 
+[![CI](https://github.com/blauerberg/dsh-web-push-notification/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/blauerberg/dsh-web-push-notification/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/dsh-web-push-notification?logo=npm)](https://www.npmjs.com/package/dsh-web-push-notification)
+[![License](https://img.shields.io/github/license/blauerberg/dsh-web-push-notification)](LICENSE)
+
 Get browser notifications when a DeepSeek Harness task completes or stops, or
 needs your approval or response. Web Push delivers them even when the page is
 not open.
