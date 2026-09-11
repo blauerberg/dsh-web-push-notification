@@ -16,7 +16,7 @@ each command and path.
 Install the plugin into the profile you want to notify:
 
 ```sh
-dsh plugin --profile web add dsh-web-push-notification@0.1.1
+dsh plugin --profile web add dsh-web-push-notification
 ```
 
 Add the plugin configuration to
