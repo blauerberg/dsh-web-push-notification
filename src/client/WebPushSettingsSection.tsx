@@ -374,7 +374,7 @@ function browserCapability(): Exclude<Status, 'loading' | 'default' | 'denied' |
   return undefined
 }
 
-function statusState(status: Status): StateDotState {
+function statusState(status: Status): Exclude<StateDotState, 'idle'> {
   if (status === 'subscribed') return 'done'
   if (status === 'loading') return 'ongoing'
   if (status === 'default' || status === 'granted') return 'warning'
