@@ -223,8 +223,11 @@ whatever root-scope worker owns the page.
 - Session navigation uses `uiWorkspace.openSession` instead of the removed
   `sessions.open`, and the icon import uses an export that exists on the
   current client packages.
-- Peers widened to `^0.1.2-rc.1 || ^0.2.0-rc.1`; `@deepseek-ai/dsh-api-session-controller`
-  is no longer a dependency.
+- Peers narrowed to `^0.2.0-rc.2`, the version this plugin is built and
+  typechecked against. The exports it uses (`uiWorkspace.openSession`, the
+  current icon export) do not exist in `0.1.5-rc.2`, and neither does
+  `profileContext`, so on that version every profile would share one state file.
+  `@deepseek-ai/dsh-api-session-controller` is no longer a dependency.
 - The build launches TypeScript through the running Node binary, so it works on
   Windows where `node_modules/.bin/tsc` is an executable shell script.
 - Notification titles name the session they came from, using the Harness session
