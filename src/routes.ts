@@ -9,7 +9,7 @@ import {
   type PresenceReportResponse,
   type WebPushConfig,
 } from './contract.ts'
-import { deliver } from './delivery.ts'
+import { deliver, type DeliveryFailure } from './delivery.ts'
 import { HttpError, readJson, sendJson, sendText } from './http.ts'
 import type { PresenceRegistry } from './presence.ts'
 import type { PushSender } from './sender.ts'
@@ -44,7 +44,7 @@ export interface PushRouteOptions {
   readonly presence: PresenceRegistry
   readonly maxRequestBodyBytes: number
   readonly requestRejection: HostConnectionHandle['requestRejection']
-  readonly onDeliveryFailure?: (status: number | undefined) => void
+  readonly onDeliveryFailure?: (failure: DeliveryFailure) => void
 }
 
 export function createPushRoutes(options: PushRouteOptions): WebRoute[] {

@@ -111,6 +111,9 @@ describe('Web Push routes', () => {
     const config = response()
     await find(CONFIG_PATH, routes).handler(request('GET'), config.response)
     expect(config.status).toBe(200)
+    // A cached key is enough to bind a new subscription to a key pair the host no
+    // longer signs with, so the answer carrying the key is never cached.
+    expect(config.headers['cache-control']).toBe('no-store')
     expect(config.body).toEqual({
       publicKey: 'AQID',
       serviceWorkerUrl: SERVICE_WORKER_PATH,
@@ -141,6 +144,56 @@ describe('Web Push routes', () => {
     await find('/__dsh/web-push/test', routes).handler(request('POST', {}), test.response)
     expect(test.body).toEqual({ sent: 0, removed: 1, failed: 0 })
     expect(store.list()).toEqual([])
+  })
+
+  it('drops a subscription the Push service refuses this deployment\u2019s key pair for', async () => {
+    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
+    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
+    store.upsert(subscription)
+    const routes = routesFor({
+      store,
+      sender: {
+        send: vi.fn(async () => {
+          // What FCM answers a record that was registered under another VAPID
+          // key pair: the store was regenerated, the browser kept the
+          // subscription it made with the previous pair.
+          throw Object.assign(new Error('received unexpected response code'), {
+            statusCode: 403,
+            body: 'the VAPID credentials in the authorization header do not correspond to the credentials used to create the subscriptions.',
+          })
+        }),
+      },
+      maxRequestBodyBytes: 1024,
+      requestRejection: authenticated,
+    })
+    const test = response()
+    await find('/__dsh/web-push/test', routes).handler(request('POST', {}), test.response)
+    expect(test.status).toBe(200)
+    expect(test.body).toEqual({ sent: 0, removed: 1, failed: 0 })
+    expect(store.list()).toEqual([])
+  })
+
+  it('keeps a subscription a 403 refuses for any other reason', async () => {
+    // Only the service's own statement that the credentials do not match is
+    // permanent. An unrelated 403 must not throw away a record that a later
+    // event can still reach.
+    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
+    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
+    store.upsert(subscription)
+    const routes = routesFor({
+      store,
+      sender: {
+        send: vi.fn(async () => {
+          throw Object.assign(new Error('forbidden'), { statusCode: 403, body: 'sender is not authorized' })
+        }),
+      },
+      maxRequestBodyBytes: 1024,
+      requestRejection: authenticated,
+    })
+    const test = response()
+    await find('/__dsh/web-push/test', routes).handler(request('POST', {}), test.response)
+    expect(test.body).toEqual({ sent: 0, removed: 0, failed: 1 })
+    expect(store.list()).toHaveLength(1)
   })
 
   it('carries a rotated subscription\u2019s preferences over from the endpoint it replaces', async () => {

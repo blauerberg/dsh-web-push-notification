@@ -14,7 +14,6 @@ import {
   registerSubscription,
   saveSuppression,
   sendTest,
-  subscriptionUsesApplicationServerKey,
   unregisterSubscription,
   waitForActiveServiceWorker,
 } from './api.ts'
@@ -200,17 +199,22 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
         scope: config.serviceWorkerScope,
       })
       await waitForActiveServiceWorker(registration)
-      let subscription = await registration.pushManager.getSubscription()
-      if (subscription !== null && !subscriptionUsesApplicationServerKey(subscription, config.publicKey)) {
+      const subscription = await registration.pushManager.getSubscription()
+      // Renew rather than adopt: the key a browser reports for an existing
+      // subscription is only what this page last asked for, and it agrees with a
+      // stale config as readily as with the current one, while the Push service
+      // binds the subscription to the key it actually saw. A subscription the
+      // host refuses is only ever repaired by making a new one, so an explicit
+      // enable always makes one.
+      if (subscription !== null) {
         await unregisterSubscription(subscription.endpoint)
         await subscription.unsubscribe()
-        subscription = null
       }
-      subscription ??= await registration.pushManager.subscribe({
+      const renewed = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: applicationServerKey(config.publicKey),
       })
-      await registerSubscription(subscription, preferences)
+      await registerSubscription(renewed, preferences)
       setStatus('subscribed')
       setMessage('Web Push is enabled.')
     } catch (error) {
@@ -250,9 +254,21 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
         title: testTitle === '' ? undefined : testTitle,
         body: testBody === '' ? undefined : testBody,
       })
+      const counts = `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`
+      // A removal is the one outcome worth spelling out: the saved subscription
+      // is gone, so the counters alone would leave the panel describing a
+      // subscription the host no longer holds. Zero everywhere is the other one:
+      // the host holds no subscription at all, which looks like success.
       setMessage(
-        `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`,
+        result.removed > 0
+          ? `${counts} The push service no longer accepts ${result.removed === 1 ? 'a saved subscription' : 'some saved subscriptions'}. Enable Web Push again to renew.`
+          : result.sent === 0 && result.failed === 0
+            ? `${counts} This device is not registered with the host yet: turn Enabled on for this device and try again.`
+            : counts,
       )
+      // Reconcile, so the status line and the renewal hint follow the removal
+      // instead of waiting for the next time the panel is opened.
+      if (result.removed > 0) await refresh(preferences)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
