@@ -22,6 +22,20 @@ import { validateStoreState } from './validation.ts'
 /** Generate a new VAPID key pair. Kept as a parameter so storage tests are deterministic. */
 export type VapidKeyFactory = () => VapidKeys
 
+/**
+ * A predecessor file to inherit from.
+ *
+ * `adoptSubscriptions` says whether the subscription list in that file belongs to
+ * this profile. A file every profile used to write to names devices this profile
+ * may not serve, so only its VAPID key pair is inherited: the pair is the
+ * deployment's push identity, and every subscription a browser still holds is
+ * bound to the pair that created it.
+ */
+export interface LegacyStore {
+  readonly path: string
+  readonly adoptSubscriptions: boolean
+}
+
 export class PushStore {
   private readonly subscriptionsByEndpoint: Map<string, PushSubscriptionRecord>
 
@@ -44,14 +58,18 @@ export class PushStore {
    * Before this plugin moved its state out of the installed package directory,
    * the file lived beside the bundle and a reinstall replaced it — which rotated
    * the VAPID key and silently orphaned every subscription the browser still had.
-   * `legacyPaths` are the places that file used to live, newest first; the first
-   * one that parses is adopted, so a deployment that upgrades keeps its keys.
+   * `legacyStores` are the places that file used to live, newest first.
+   *
+   * The key pair is inherited from the newest readable predecessor whatever it is,
+   * including one whose subscription list is not attributable to this profile: a
+   * browser subscription is bound to the pair that created it, so minting a second
+   * pair while any predecessor is still there orphans every device at once.
    */
-  static open(path: string, generateVapidKeys: VapidKeyFactory, legacyPaths: readonly string[] = []): PushStore {
+  static open(path: string, generateVapidKeys: VapidKeyFactory, legacyStores: readonly LegacyStore[] = []): PushStore {
     const parent = dirname(path)
     mkdirSync(parent, { recursive: true, mode: 0o700 })
     if (!existsSync(path)) {
-      const adopted = PushStore.adopt(path, legacyPaths)
+      const adopted = PushStore.adopt(path, legacyStores)
       if (adopted !== undefined) return adopted
       const vapid = generateVapidKeys()
       const store = new PushStore(path, vapid, [], { ...DEFAULT_SUPPRESSION_SETTINGS })
@@ -66,28 +84,53 @@ export class PushStore {
   }
 
   /**
-   * Read the first legacy file that holds a valid store and persist it at `path`.
+   * Read the newest legacy file that holds a valid store and persist it at `path`.
    *
    * A candidate that cannot be read as a store is skipped rather than fatal: the
    * whole point of the move is that a broken predecessor must not stop the plugin
    * from booting, and the original is left in place to be inspected by hand.
    */
-  private static adopt(path: string, legacyPaths: readonly string[]): PushStore | undefined {
-    for (const legacyPath of legacyPaths) {
-      if (!existsSync(legacyPath)) continue
-      let state: PushStoreState
-      try {
-        assertRegularFile(legacyPath)
-        const parsed: unknown = JSON.parse(readFileSync(legacyPath, 'utf8'))
-        state = validateStoreState(parsed)
-      } catch {
-        continue
+  private static adopt(path: string, legacyStores: readonly LegacyStore[]): PushStore | undefined {
+    let vapid: VapidKeys | undefined
+    let adoptedFrom: string | undefined
+    let subscriptions: readonly PushSubscriptionRecord[] | undefined
+    let suppression: SuppressionSettings | undefined
+    for (const legacy of legacyStores) {
+      const state = PushStore.readState(legacy.path)
+      if (state === undefined) continue
+      if (vapid === undefined) {
+        vapid = state.vapid
+        adoptedFrom = legacy.path
       }
-      const store = new PushStore(path, state.vapid, state.subscriptions, state.settings, legacyPath)
-      store.persist()
-      return store
+      // A list only works next to the pair that created it, so a candidate kept
+      // for its subscriptions has to carry the pair this store inherits.
+      if (legacy.adoptSubscriptions && subscriptions === undefined && sameVapidKeys(state.vapid, vapid)) {
+        subscriptions = state.subscriptions
+        suppression = state.settings
+      }
     }
-    return undefined
+    if (vapid === undefined) return undefined
+    const store = new PushStore(
+      path,
+      vapid,
+      subscriptions ?? [],
+      suppression ?? { ...DEFAULT_SUPPRESSION_SETTINGS },
+      adoptedFrom,
+    )
+    store.persist()
+    return store
+  }
+
+  /** A predecessor's state, or undefined when the file is missing or unreadable. */
+  private static readState(path: string): PushStoreState | undefined {
+    if (!existsSync(path)) return undefined
+    try {
+      assertRegularFile(path)
+      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+      return validateStoreState(parsed)
+    } catch {
+      return undefined
+    }
   }
 
   /** Where the state was read from, when this store adopted a predecessor's file. */
@@ -183,6 +226,10 @@ export class PushStore {
 function assertRegularFile(path: string): void {
   const stat = lstatSync(path)
   if (!stat.isFile()) throw new Error(`push storage is not a regular file: ${path}`)
+}
+
+function sameVapidKeys(left: VapidKeys, right: VapidKeys): boolean {
+  return left.publicKey === right.publicKey && left.privateKey === right.privateKey
 }
 
 function cloneSubscription(subscription: PushSubscriptionRecord): PushSubscriptionRecord {

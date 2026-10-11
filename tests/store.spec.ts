@@ -122,8 +122,8 @@ describe('PushStore', () => {
 
     const path = join(root, 'new', 'state.json')
     const store = PushStore.open(path, () => ({ publicKey: 'wrong', privateKey: 'wrong' }), [
-      join(root, 'gone.json'),
-      legacyPath,
+      { path: join(root, 'gone.json'), adoptSubscriptions: true },
+      { path: legacyPath, adoptSubscriptions: true },
     ])
     expect(store.migratedFrom).toBe(legacyPath)
     expect(store.publicKey).toBe(keys.publicKey)
@@ -133,11 +133,81 @@ describe('PushStore', () => {
     const persisted = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     expect(persisted.vapid).toEqual(keys)
     expect(persisted.settings).toEqual({ suppressWhileActive: true, idleMinutes: 10 })
-    expect(PushStore.open(path, () => ({ publicKey: 'wrong', privateKey: 'wrong' }), [legacyPath]).migratedFrom).toBe(
-      undefined,
-    )
+    expect(
+      PushStore.open(path, () => ({ publicKey: 'wrong', privateKey: 'wrong' }), [
+        { path: legacyPath, adoptSubscriptions: true },
+      ]).migratedFrom,
+    ).toBe(undefined)
     // Reading it is the whole job: the predecessor is left where it was.
     expect(existsSync(legacyPath)).toBe(true)
+  })
+
+  it('inherits the key pair of a shared predecessor without taking its devices', () => {
+    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-store-'))
+    // The file this plugin kept at the Harness home when it ran outside a profile:
+    // every profile used to write to it, so its subscription list names devices
+    // this profile may not serve, but the pair it holds is the one those devices
+    // are bound to.
+    const sharedPath = join(root, 'home', 'web-push', 'state.json')
+    mkdirSync(dirname(sharedPath), { recursive: true })
+    writeFileSync(
+      sharedPath,
+      JSON.stringify({
+        version: 1,
+        vapid: keys,
+        subscriptions: [
+          {
+            endpoint: subscription.endpoint,
+            expirationTime: null,
+            keys: subscription.keys,
+            preferences: { turnCompleted: true, turnFailed: true, approval: true, question: true, bodyMode: 'full' },
+          },
+        ],
+      }),
+    )
+
+    const path = join(root, 'profile', 'web-push', 'state.json')
+    const store = PushStore.open(path, () => ({ publicKey: 'minted', privateKey: 'minted' }), [
+      { path: sharedPath, adoptSubscriptions: false },
+    ])
+    expect(store.publicKey).toBe(keys.publicKey)
+    expect(store.privateKey).toBe(keys.privateKey)
+    expect(store.migratedFrom).toBe(sharedPath)
+    expect(store.list()).toEqual([])
+  })
+
+  it('keeps a list only when its own key pair is the one inherited', () => {
+    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-store-'))
+    const newer = join(root, 'home', 'web-push', 'state.json')
+    const older = join(root, 'old-bundle', 'web-push.json')
+    mkdirSync(dirname(newer), { recursive: true })
+    mkdirSync(dirname(older), { recursive: true })
+    writeFileSync(newer, JSON.stringify({ version: 1, vapid: keys, subscriptions: [] }))
+    writeFileSync(
+      older,
+      JSON.stringify({
+        version: 1,
+        vapid: { publicKey: 'other', privateKey: 'other' },
+        subscriptions: [
+          {
+            endpoint: subscription.endpoint,
+            expirationTime: null,
+            keys: subscription.keys,
+            preferences: { turnCompleted: true, turnFailed: true, approval: true, question: true, bodyMode: 'full' },
+          },
+        ],
+      }),
+    )
+
+    const path = join(root, 'profile', 'web-push', 'state.json')
+    const store = PushStore.open(path, () => ({ publicKey: 'minted', privateKey: 'minted' }), [
+      { path: newer, adoptSubscriptions: false },
+      { path: older, adoptSubscriptions: true },
+    ])
+    // Signing with the inherited pair could never reach a record created under a
+    // different one, so the mismatched list stays behind.
+    expect(store.publicKey).toBe(keys.publicKey)
+    expect(store.list()).toEqual([])
   })
 
   it('starts fresh rather than failing when the predecessor file is unreadable', () => {
@@ -145,7 +215,10 @@ describe('PushStore', () => {
     const brokenPath = join(root, 'broken.json')
     writeFileSync(brokenPath, '{ this is not json')
     const path = join(root, 'state.json')
-    const store = PushStore.open(path, () => keys, [join(root, 'missing.json'), brokenPath])
+    const store = PushStore.open(path, () => keys, [
+      { path: join(root, 'missing.json'), adoptSubscriptions: true },
+      { path: brokenPath, adoptSubscriptions: true },
+    ])
     expect(store.migratedFrom).toBeUndefined()
     expect(store.publicKey).toBe(keys.publicKey)
     expect(store.list()).toEqual([])

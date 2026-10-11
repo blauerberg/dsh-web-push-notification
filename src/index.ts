@@ -7,12 +7,12 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
-import { deliver } from './delivery.ts'
+import { deliver, type DeliveryFailure } from './delivery.ts'
 import { notificationForEvent, sessionTitleOf } from './notification.ts'
 import { PresenceRegistry } from './presence.ts'
 import { createPushRoutes } from './routes.ts'
 import { createWebPushSender, generateVapidKeys } from './sender.ts'
-import { PushStore } from './store.ts'
+import { PushStore, type LegacyStore } from './store.ts'
 
 export const name = 'dsh-web-push-notification'
 
@@ -79,28 +79,40 @@ function profileDirectory(ctx: Context): string | undefined {
 }
 
 /**
- * Every place a 0.1.1 deployment may have left its `web-push.json`, newest first.
+ * Every place an earlier deployment may have left its push state, newest first.
  *
- * That file used to sit beside the installed bundle, so the installer that
- * brings in this version may already have removed the directory it lived in.
- * Candidates are therefore collected from every location it could occupy — the
- * bundle itself, the profile's package directory, and the pnpm store's
- * per-version directories — and the first one still holding a valid store wins.
- * The originals are read, never moved or deleted.
+ * The 0.1.1 file sat beside the installed bundle, so the installer that brings in
+ * this version may already have removed the directory it lived in. Candidates are
+ * therefore collected from every location it could occupy — the bundle itself, the
+ * profile's package directory, and the pnpm store's per-version directories — and
+ * the newest one still holding a valid store wins. The originals are read, never
+ * moved or deleted.
+ *
+ * A run outside any profile kept its state at the Harness home instead, and a
+ * deployment that later started running under a profile found a fresh profile
+ * path there. Omitting that file minted a second VAPID key pair and orphaned every
+ * subscription the browsers still held, so it is a candidate too; its subscription
+ * list is not inherited, because every profile used to write to that one file.
  */
-export function legacyStoragePaths(ctx: Context): string[] {
-  const candidates: string[] = []
-  if (ctx.baseUrl !== undefined) candidates.push(fileURLToPath(new URL('web-push.json', ctx.baseUrl)))
+export function legacyStoragePaths(ctx: Context): LegacyStore[] {
+  const candidates: LegacyStore[] = []
+  if (ctx.baseUrl !== undefined) {
+    candidates.push({ path: fileURLToPath(new URL('web-push.json', ctx.baseUrl)), adoptSubscriptions: true })
+  }
   const dir = profileDirectory(ctx)
   if (dir !== undefined) {
     const nodeModules = join(dir, 'node_modules')
-    candidates.push(join(nodeModules, 'dsh-web-push-notification', 'web-push.json'))
+    candidates.push({ path: join(nodeModules, 'dsh-web-push-notification', 'web-push.json'), adoptSubscriptions: true })
     const store = join(nodeModules, '.pnpm')
     for (const entry of storeEntries(store)) {
-      candidates.push(join(store, entry, 'node_modules', 'dsh-web-push-notification', 'web-push.json'))
+      candidates.push({
+        path: join(store, entry, 'node_modules', 'dsh-web-push-notification', 'web-push.json'),
+        adoptSubscriptions: true,
+      })
     }
   }
-  return candidates.sort((left, right) => modifiedAt(right) - modifiedAt(left))
+  candidates.push({ path: dshHomePath('web-push', 'state.json'), adoptSubscriptions: false })
+  return candidates.sort((left, right) => modifiedAt(right.path) - modifiedAt(left.path))
 }
 
 /** Version directories a pnpm store keeps for this plugin. */
@@ -141,10 +153,22 @@ export function apply(ctx: Context, config?: Config): void {
     publicKey: store.publicKey,
     privateKey: store.privateKey,
   })
-  const onDeliveryFailure = (status: number | undefined): void => {
-    ctx.logger.warn(
-      new Error(`dsh-web-push-notification: delivery failed${status === undefined ? '' : ` (${String(status)})`}`),
-    )
+  /**
+   * One warning per failed send, with the case worth acting on spelled out. A
+   * subscription the Push service refuses this deployment's key pair for can
+   * never be delivered to again, so the record is dropped and that device has to
+   * enable Web Push once more; without the sentence, the log says only that
+   * something was refused.
+   */
+  const onDeliveryFailure = (failure: DeliveryFailure): void => {
+    const status = failure.status === undefined ? '' : ` (${String(failure.status)})`
+    const reason =
+      failure.kind === 'credentials'
+        ? `: the Push service refused this deployment's VAPID key pair for a saved subscription${failure.removed ? ', which was removed; enable Web Push again to renew it' : ''}`
+        : failure.kind === 'gone'
+          ? `: a saved subscription had expired${failure.removed ? ' and was removed' : ''}`
+          : ''
+    ctx.logger.warn(new Error(`dsh-web-push-notification: delivery failed${status}${reason}`))
   }
   const routes = createPushRoutes({
     store,

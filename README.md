@@ -43,6 +43,15 @@ second profile's sessions never reach the first profile's browser, which is what
 a single file under the Harness home would do. Set `storagePath` in the plugin
 configuration only to use another location.
 
+A deployment that runs without a profile keeps its state at
+`$DSH_HOME/web-push/state.json`, and the first profile that starts up afterwards
+reads the VAPID key pair from that file. A browser subscription is bound to the
+pair that created it, so inheriting the pair is what keeps the phones and desktops
+that already enabled Web Push ringing. The subscription list is deliberately left
+behind, because every profile used to write to that one file and a device in it
+may belong to another profile. Each device re-registers itself the next time its
+Settings page loads, which needs no action from the user.
+
 Installing a bundle adds a package to the profile, so it needs a Harness
 restart before the plugin loads. Restart with `dshw-restart.ps1`.
 
@@ -56,6 +65,18 @@ passed to the server as absent, so the test notification uses the default copy (
 placeholders in those inputs show it); fill one in only to check how a custom title
 or body renders on your phone. The real notifications are unaffected by these two
 fields.
+
+A subscription can outlive the VAPID key pair it was created with: a state file
+that is genuinely gone - a fresh profile with no predecessor to inherit from, or a
+deployment whose keys were replaced - leaves the browser holding a subscription
+this host no longer signs for. The Push service answers that with
+"the VAPID credentials in the authorization header do not correspond to the
+credentials used to create the subscriptions", which no retry can fix, so the host
+drops the record rather than ringing a dead endpoint on every event. **Send test**
+names the removal instead of reporting a bare failure. Enabling Web Push again
+renews the subscription: the page unsubscribes the stored one and creates a new
+one under the current key pair, rather than reporting the key change as a
+permanent failure.
 
 ## Notification behavior
 
@@ -188,10 +209,12 @@ whatever root-scope worker owns the page.
   superseded endpoint removed only once the replacement is stored.
 - State moved out of the plugin package directory, to `web-push/state.json` under
   the profile directory. The old bundle-local `web-push.json` is adopted on first
-  boot, so an upgrading deployment keeps its VAPID key and subscriptions. A file
-  at the earlier 0.2.x preview location (`$DSH_HOME/web-push/state.json`) is
-  deliberately left alone: state that every profile wrote to cannot be attributed
-  to one of them, so the deployment re-enables notifications once instead.
+  boot, so an upgrading deployment keeps its VAPID key and subscriptions. The
+  earlier location for a run without a profile (`$DSH_HOME/web-push/state.json`)
+  supplies its VAPID key pair as well, because a subscription is bound to the pair
+  that created it; only its subscription list is left alone, since state that every
+  profile wrote to cannot be attributed to one of them. Each device re-registers
+  itself when its Settings page next loads.
 - Subscription endpoints addressing a private, loopback, or link-local host are
   rejected, including the IPv4-mapped IPv6 and trailing-dot spellings of the same
   address. A hostname that merely resolves to a private address is still accepted,
@@ -223,6 +246,9 @@ whatever root-scope worker owns the page.
   device: each page reports focus, visibility, and idleness, and an idle or dead
   page stops counting. Pointer movement is attention, not just clicks. The
   **Send test** button still always sends.
+- A subscription the Push service refuses this deployment's VAPID key pair for is
+  dropped instead of being retried on every session event, and **Send test** says
+  the record was removed instead of reporting a bare failure.
 - Notification titles lead with the event kind and then the session, clamped to 48
   characters, because Android truncates a one-line title from the right.
 - Notification bodies are converted from markdown to plain text before sending, so a

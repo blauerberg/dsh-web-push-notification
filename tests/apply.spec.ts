@@ -112,6 +112,67 @@ describe('host plugin registration', () => {
     }
   })
 
+  it('inherits the key pair a deployment kept at the Harness home before it ran in a profile', () => {
+    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
+    const previousHome = process.env.DSH_HOME
+    process.env.DSH_HOME = join(root, 'home')
+    try {
+      // What a run outside any profile left behind: the deployment's push
+      // identity, plus a device that may belong to another profile.
+      const shared = join(root, 'home', 'web-push')
+      mkdirSync(shared, { recursive: true })
+      writeFileSync(
+        join(shared, 'state.json'),
+        JSON.stringify({
+          version: 1,
+          vapid: { publicKey: 'SHAREDKEY', privateKey: 'SHAREDBAUG' },
+          subscriptions: [
+            {
+              endpoint: 'https://fcm.googleapis.com/fcm/send/another-profile',
+              expirationTime: null,
+              keys: { p256dh: 'p', auth: 'a' },
+              preferences: { turnCompleted: true, turnFailed: true, approval: true, question: true, bodyMode: 'full' },
+            },
+          ],
+        }),
+      )
+
+      const dir = join(root, 'profiles', 'web')
+      mkdirSync(dir, { recursive: true })
+      const ctx = {
+        baseUrl: `${pathToFileURL(dir).href}/`,
+        get(name: string) {
+          return name === 'profileContext' ? { name: 'web', dir } : undefined
+        },
+        connection: { requestRejection: () => undefined },
+        webServer: { register: () => () => {} },
+        logger: { info: vi.fn(), warn: vi.fn() },
+        on() {
+          return () => {}
+        },
+        effect(factory: () => (() => void) | undefined) {
+          factory()
+        },
+      }
+      apply(ctx as never, { vapidSubject: 'mailto:test@example.invalid', maxRequestBodyBytes: 1024 })
+
+      const persisted = JSON.parse(readFileSync(join(dir, 'web-push', 'state.json'), 'utf8')) as {
+        vapid: { publicKey: string }
+        subscriptions: unknown[]
+      }
+      // A browser subscription is bound to the pair that created it, so a move to
+      // the per-profile path carries the pair along instead of minting a second
+      // one and orphaning every device the deployment had.
+      expect(persisted.vapid.publicKey).toBe('SHAREDKEY')
+      expect(webPush.generateVAPIDKeys).not.toHaveBeenCalled()
+      // The device list stays behind: every profile used to write to that file.
+      expect(persisted.subscriptions).toEqual([])
+    } finally {
+      if (previousHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previousHome
+    }
+  })
+
   it('delivers an event to eligible subscriptions and contains one send failure', async () => {
     root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const storagePath = join(root, 'state.json')
