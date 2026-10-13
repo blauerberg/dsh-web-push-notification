@@ -176,7 +176,7 @@ describe('PushStore', () => {
     expect(store.list()).toEqual([])
   })
 
-  it('keeps a list only when its own key pair is the one inherited', () => {
+  it('prefers profile-owned keys and devices over a newer shared predecessor', () => {
     root = mkdtempSync(join(tmpdir(), 'dsh-web-push-store-'))
     const newer = join(root, 'home', 'web-push', 'state.json')
     const older = join(root, 'old-bundle', 'web-push.json')
@@ -204,10 +204,10 @@ describe('PushStore', () => {
       { path: newer, adoptSubscriptions: false },
       { path: older, adoptSubscriptions: true },
     ])
-    // Signing with the inherited pair could never reach a record created under a
-    // different one, so the mismatched list stays behind.
-    expect(store.publicKey).toBe(keys.publicKey)
-    expect(store.list()).toEqual([])
+    expect(store.publicKey).toBe('other')
+    expect(store.privateKey).toBe('other')
+    expect(store.migratedFrom).toBe(older)
+    expect(store.list().map((item) => item.endpoint)).toEqual([subscription.endpoint])
   })
 
   it('starts fresh rather than failing when the predecessor file is unreadable', () => {

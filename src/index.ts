@@ -79,20 +79,9 @@ function profileDirectory(ctx: Context): string | undefined {
 }
 
 /**
- * Every place an earlier deployment may have left its push state, newest first.
- *
- * The 0.1.1 file sat beside the installed bundle, so the installer that brings in
- * this version may already have removed the directory it lived in. Candidates are
- * therefore collected from every location it could occupy — the bundle itself, the
- * profile's package directory, and the pnpm store's per-version directories — and
- * the newest one still holding a valid store wins. The originals are read, never
- * moved or deleted.
- *
- * A run outside any profile kept its state at the Harness home instead, and a
- * deployment that later started running under a profile found a fresh profile
- * path there. Omitting that file minted a second VAPID key pair and orphaned every
- * subscription the browsers still held, so it is a candidate too; its subscription
- * list is not inherited, because every profile used to write to that one file.
+ * Legacy state locations ordered newest first. Profile-owned files retain their
+ * keys and subscriptions. The Harness-home file supplies only fallback keys because
+ * its devices cannot be attributed to a profile.
  */
 export function legacyStoragePaths(ctx: Context): LegacyStore[] {
   const candidates: LegacyStore[] = []

@@ -55,15 +55,9 @@ export class PushStore {
   /**
    * Open the store at `path`, creating it when nothing is there yet.
    *
-   * Before this plugin moved its state out of the installed package directory,
-   * the file lived beside the bundle and a reinstall replaced it — which rotated
-   * the VAPID key and silently orphaned every subscription the browser still had.
-   * `legacyStores` are the places that file used to live, newest first.
-   *
-   * The key pair is inherited from the newest readable predecessor whatever it is,
-   * including one whose subscription list is not attributable to this profile: a
-   * browser subscription is bound to the pair that created it, so minting a second
-   * pair while any predecessor is still there orphans every device at once.
+   * `legacyStores` are ordered newest first. A readable profile-owned store supplies
+   * its keys, subscriptions, and settings. Shared state supplies only its keys when
+   * no profile-owned store can be read.
    */
   static open(path: string, generateVapidKeys: VapidKeyFactory, legacyStores: readonly LegacyStore[] = []): PushStore {
     const parent = dirname(path)
@@ -84,38 +78,28 @@ export class PushStore {
   }
 
   /**
-   * Read the newest legacy file that holds a valid store and persist it at `path`.
-   *
-   * A candidate that cannot be read as a store is skipped rather than fatal: the
-   * whole point of the move is that a broken predecessor must not stop the plugin
-   * from booting, and the original is left in place to be inspected by hand.
+   * Persist the newest readable profile-owned predecessor, falling back to shared keys.
+   * Originals remain available for manual recovery.
    */
   private static adopt(path: string, legacyStores: readonly LegacyStore[]): PushStore | undefined {
-    let vapid: VapidKeys | undefined
-    let adoptedFrom: string | undefined
-    let subscriptions: readonly PushSubscriptionRecord[] | undefined
-    let suppression: SuppressionSettings | undefined
+    let adopted: { legacy: LegacyStore; state: PushStoreState } | undefined
     for (const legacy of legacyStores) {
       const state = PushStore.readState(legacy.path)
       if (state === undefined) continue
-      if (vapid === undefined) {
-        vapid = state.vapid
-        adoptedFrom = legacy.path
+      if (legacy.adoptSubscriptions) {
+        adopted = { legacy, state }
+        break
       }
-      // A list only works next to the pair that created it, so a candidate kept
-      // for its subscriptions has to carry the pair this store inherits.
-      if (legacy.adoptSubscriptions && subscriptions === undefined && sameVapidKeys(state.vapid, vapid)) {
-        subscriptions = state.subscriptions
-        suppression = state.settings
-      }
+      adopted ??= { legacy, state }
     }
-    if (vapid === undefined) return undefined
+    if (adopted === undefined) return undefined
+    const { legacy, state } = adopted
     const store = new PushStore(
       path,
-      vapid,
-      subscriptions ?? [],
-      suppression ?? { ...DEFAULT_SUPPRESSION_SETTINGS },
-      adoptedFrom,
+      state.vapid,
+      legacy.adoptSubscriptions ? state.subscriptions : [],
+      legacy.adoptSubscriptions ? state.settings : { ...DEFAULT_SUPPRESSION_SETTINGS },
+      legacy.path,
     )
     store.persist()
     return store
@@ -226,10 +210,6 @@ export class PushStore {
 function assertRegularFile(path: string): void {
   const stat = lstatSync(path)
   if (!stat.isFile()) throw new Error(`push storage is not a regular file: ${path}`)
-}
-
-function sameVapidKeys(left: VapidKeys, right: VapidKeys): boolean {
-  return left.publicKey === right.publicKey && left.privateKey === right.privateKey
 }
 
 function cloneSubscription(subscription: PushSubscriptionRecord): PushSubscriptionRecord {
