@@ -1,6 +1,7 @@
-import { build } from 'esbuild'
 import { execFileSync } from 'node:child_process'
 import { rm } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { build } from 'esbuild'
 
 const dshExternal = ['@deepseek-ai/cordis', '@deepseek-ai/dsh-*']
 
@@ -49,4 +50,8 @@ await build({
   logLevel: 'info',
 })
 
-execFileSync('node_modules/.bin/tsc', ['-p', 'tsconfig.json'], { stdio: 'inherit' })
+// Launch TypeScript through the current Node binary. The `node_modules/.bin/tsc`
+// shim is an extensionless shell script on Windows, which execFileSync cannot
+// execute, so resolving the CLI entry keeps the build portable.
+const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc')
+execFileSync(process.execPath, [tsc, '-p', 'tsconfig.json'], { stdio: 'inherit' })

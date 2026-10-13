@@ -10,4 +10,12 @@ describe('package notices', () => {
     expect(notice).toContain('@deepseek-ai/cosmokit')
     expect(notice).toContain('Copyright (c) 2021-present Shigma')
   })
+
+  it('ships a bundle patch that names a VAPID contact subject', () => {
+    // The insert row must name the plugin and carry a subject a Push service
+    // will accept, otherwise the profile boots the plugin without a contact URI.
+    const patch = readFileSync('cordis.patch.yml', 'utf8')
+    expect(patch).toContain('dsh-web-push-notification')
+    expect(/vapidSubject:\s*['"]?([^'"\s]+)['"]?/.exec(patch)?.[1]).toMatch(/^(mailto:|https:\/\/)/)
+  })
 })

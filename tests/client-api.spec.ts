@@ -2,10 +2,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   applicationServerKey,
   reconcileSubscription,
+  refreshServiceWorker,
+  saveSuppression,
   subscriptionUsesApplicationServerKey,
   waitForActiveServiceWorker,
 } from '../src/client/api.ts'
 import { DEFAULT_NOTIFICATION_PREFERENCES } from '../src/types.ts'
+
+const CONFIG = {
+  publicKey: 'AQID',
+  serviceWorkerUrl: '/sw.js',
+  serviceWorkerScope: '/scope/',
+  suppression: { suppressWhileActive: true, idleMinutes: 10 },
+} as const
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -69,16 +78,46 @@ describe('client Service Worker helpers', () => {
     const fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetch)
 
-    await expect(
-      reconcileSubscription(
-        {
-          publicKey: 'AQID',
-          serviceWorkerUrl: '/sw.js',
-          serviceWorkerScope: '/scope/',
-        },
-        DEFAULT_NOTIFICATION_PREFERENCES,
-      ),
-    ).resolves.toBe('registered')
+    await expect(reconcileSubscription(CONFIG, DEFAULT_NOTIFICATION_PREFERENCES)).resolves.toBe('registered')
     expect(fetch).toHaveBeenCalledWith('/__dsh/web-push/subscribe', expect.objectContaining({ method: 'POST' }))
+  })
+
+  it('posts the suppression policy and returns what the server kept', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ suppressWhileActive: false, idleMinutes: 2 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(saveSuppression({ suppressWhileActive: false, idleMinutes: 2 })).resolves.toEqual({
+      suppressWhileActive: false,
+      idleMinutes: 2,
+    })
+    expect(fetch).toHaveBeenCalledWith(
+      '/__dsh/web-push/settings',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ suppressWhileActive: false, idleMinutes: 2 }),
+      }),
+    )
+  })
+
+  it('re-fetches the worker for its own scope when the section opens', async () => {
+    const update = vi.fn().mockResolvedValue(undefined)
+    const getRegistration = vi.fn().mockResolvedValue({ update })
+    vi.stubGlobal('navigator', { serviceWorker: { getRegistration } })
+
+    await expect(refreshServiceWorker(CONFIG)).resolves.toBeUndefined()
+    expect(getRegistration).toHaveBeenCalledWith('/scope/')
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the installed worker when the update check fails', async () => {
+    vi.stubGlobal('navigator', {
+      serviceWorker: {
+        getRegistration: vi.fn().mockRejectedValue(new Error('offline')),
+      },
+    })
+
+    await expect(refreshServiceWorker(CONFIG)).resolves.toBeUndefined()
   })
 })

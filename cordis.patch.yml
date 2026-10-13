@@ -1,3 +1,8 @@
+# host/plugin placement: the plugin serves its own narrow-scope Service Worker
+# and the push routes on the Harness web server.
 - insert:
     - id: dsh-web-push-notification
       name: dsh-web-push-notification
+      config:
+        # web-push requires a contact subject; replace it with your own address.
+        vapidSubject: 'mailto:dsh@localhost'

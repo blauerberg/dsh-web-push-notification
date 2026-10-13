@@ -1,22 +1,30 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
-import { Button, IconChevronDownOutline14, StateDot, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button,
+  IconChevronDownOutlineRegular,
+  StateDot,
+  type StateDotState,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   applicationServerKey,
   loadConfig,
   reconcileSubscription,
+  refreshServiceWorker,
   registerSubscription,
+  saveSuppression,
   sendTest,
-  subscriptionUsesApplicationServerKey,
   unregisterSubscription,
   waitForActiveServiceWorker,
 } from './api.ts'
 import { readPreferences, writePreferences } from './preferences.ts'
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
+  DEFAULT_SUPPRESSION_SETTINGS,
   type NotificationBodyMode,
   type NotificationKind,
   type NotificationPreferences,
+  type SuppressionSettings,
 } from '../types.ts'
 
 type Status = 'loading' | 'unsupported' | 'insecure-context' | 'default' | 'denied' | 'granted' | 'subscribed'
@@ -31,6 +39,9 @@ const EVENT_OPTIONS: readonly {
   { key: 'approval', label: 'Approval required', description: 'Notify when an action needs your approval.' },
   { key: 'question', label: 'Response required', description: 'Notify when the agent needs an answer.' },
 ]
+
+/** Whole minutes, from "stop asking so quickly" to "leave me alone for a while". */
+const IDLE_CHOICES = [1, 2, 5, 10, 15, 30] as const
 
 const sectionStyle: CSSProperties = {
   display: 'flex',
@@ -107,6 +118,25 @@ const checkboxStyle: CSSProperties = {
   accentColor: 'var(--dsw-alias-state-success-primary)',
 }
 
+const testFieldStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+  marginTop: 12,
+}
+
+const testInputStyle: CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '8px 12px',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-bg-module-platform)',
+  color: 'var(--dsw-alias-label-primary)',
+  font: 'inherit',
+  fontSize: 13,
+}
+
 export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>): JSX.Element {
   const [status, setStatus] = useState<Status>('loading')
   const [busy, setBusy] = useState(false)
@@ -114,6 +144,11 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
   const [preferences, setPreferences] = useState<NotificationPreferences>(() => ({
     ...DEFAULT_NOTIFICATION_PREFERENCES,
   }))
+  // Undefined until the config arrives: the controls stay disabled rather than
+  // showing defaults that are not what the server holds.
+  const [suppression, setSuppression] = useState<SuppressionSettings>()
+  const [testTitle, setTestTitle] = useState('')
+  const [testBody, setTestBody] = useState('')
 
   const refresh = useCallback(async (currentPreferences: NotificationPreferences): Promise<void> => {
     const capability = browserCapability()
@@ -123,6 +158,8 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
     }
     try {
       const config = await loadConfig()
+      setSuppression(config.suppression)
+      await refreshServiceWorker(config)
       const subscriptionState = await reconcileSubscription(config, currentPreferences)
       if (subscriptionState === 'mismatched') {
         setStatus(Notification.permission)
@@ -162,17 +199,22 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
         scope: config.serviceWorkerScope,
       })
       await waitForActiveServiceWorker(registration)
-      let subscription = await registration.pushManager.getSubscription()
-      if (subscription !== null && !subscriptionUsesApplicationServerKey(subscription, config.publicKey)) {
+      const subscription = await registration.pushManager.getSubscription()
+      // Renew rather than adopt: the key a browser reports for an existing
+      // subscription is only what this page last asked for, and it agrees with a
+      // stale config as readily as with the current one, while the Push service
+      // binds the subscription to the key it actually saw. A subscription the
+      // host refuses is only ever repaired by making a new one, so an explicit
+      // enable always makes one.
+      if (subscription !== null) {
         await unregisterSubscription(subscription.endpoint)
         await subscription.unsubscribe()
-        subscription = null
       }
-      subscription ??= await registration.pushManager.subscribe({
+      const renewed = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: applicationServerKey(config.publicKey),
       })
-      await registerSubscription(subscription, preferences)
+      await registerSubscription(renewed, preferences)
       setStatus('subscribed')
       setMessage('Web Push is enabled.')
     } catch (error) {
@@ -206,9 +248,23 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
     setBusy(true)
     setMessage(undefined)
     try {
-      const result = await sendTest()
+      const config = await loadConfig()
+      const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
+      const subscription = await registration?.pushManager.getSubscription()
+      const result = await sendTest({
+        title: testTitle === '' ? undefined : testTitle,
+        body: testBody === '' ? undefined : testBody,
+        endpoint: subscription?.endpoint,
+      })
+      const counts = `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`
+      const missing = subscription === undefined || subscription === null || result.subscriptionRegistered === false
+      if (missing) setStatus(Notification.permission)
       setMessage(
-        `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`,
+        missing
+          ? `${counts} This device is not registered with the host. Enable Web Push again to renew.`
+          : result.removed > 0
+            ? `${counts} An expired subscription was removed. Re-enable Web Push on the affected device.`
+            : counts,
       )
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -245,9 +301,31 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
     }
   }
 
+  /**
+   * These two are account settings, not per-device ones, so they are stored by
+   * the server and saved whether or not this browser holds a subscription. The
+   * server echoes what it kept, which is what the panel then shows.
+   */
+  const updateSuppression = async (next: SuppressionSettings): Promise<void> => {
+    const previous = suppression
+    setSuppression(next)
+    setBusy(true)
+    setMessage(undefined)
+    try {
+      setSuppression(await saveSuppression(next))
+      setMessage('Notification timing saved.')
+    } catch (error) {
+      setSuppression(previous)
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const enabledDisabled =
     busy || status === 'loading' || status === 'unsupported' || status === 'insecure-context' || status === 'denied'
   const settingsDisabled = busy || status !== 'subscribed'
+  const timingDisabled = busy || suppression === undefined
   const statusColor = statusColorOf(status)
 
   return (
@@ -316,7 +394,7 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
             <option value="summary">Summary only</option>
           </select>
           <span style={selectorIconStyle}>
-            <IconChevronDownOutline14 />
+            <IconChevronDownOutlineRegular />
           </span>
         </div>
       </div>
@@ -339,6 +417,83 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
         </label>
       ))}
 
+      <label style={rowStyle}>
+        <span style={rowTextStyle}>
+          <span style={titleStyle}>Subagent runs</span>
+          <span style={descriptionStyle}>
+            Notify when a dispatched subagent finishes its own turn. Off, only the session that dispatched it reports
+            the outcome.
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          checked={preferences.subagentRuns}
+          disabled={settingsDisabled}
+          style={checkboxStyle}
+          onChange={(event) => {
+            void updatePreference('subagentRuns', event.currentTarget.checked)
+          }}
+        />
+      </label>
+
+      <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--dsw-alias-border-l2)' }}>
+        <div style={{ ...descriptionStyle, fontWeight: 600 }}>While you are using Harness</div>
+        <label style={rowStyle}>
+          <span style={rowTextStyle}>
+            <span style={titleStyle}>Quiet while a Harness page is in front of me</span>
+            <span style={descriptionStyle}>
+              A page you are looking at, on any device, keeps the others quiet. Turn this off to still be notified while
+              you are reading.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={suppression?.suppressWhileActive ?? DEFAULT_SUPPRESSION_SETTINGS.suppressWhileActive}
+            disabled={timingDisabled}
+            style={checkboxStyle}
+            onChange={(event) => {
+              void updateSuppression({
+                suppressWhileActive: event.currentTarget.checked,
+                idleMinutes: suppression?.idleMinutes ?? DEFAULT_SUPPRESSION_SETTINGS.idleMinutes,
+              })
+            }}
+          />
+        </label>
+        <div style={{ ...rowStyle, borderBottom: 0 }}>
+          <div style={rowTextStyle}>
+            <div style={titleStyle}>Away after</div>
+            <div style={descriptionStyle}>
+              How long an untouched page still counts as you being there. Typing, clicking and moving the cursor all
+              count as attention.
+            </div>
+          </div>
+          <div style={selectorFrameStyle}>
+            <select
+              aria-label="Away after"
+              value={suppression?.idleMinutes ?? DEFAULT_SUPPRESSION_SETTINGS.idleMinutes}
+              disabled={timingDisabled || suppression?.suppressWhileActive === false}
+              style={selectorStyle}
+              onChange={(event) => {
+                void updateSuppression({
+                  suppressWhileActive:
+                    suppression?.suppressWhileActive ?? DEFAULT_SUPPRESSION_SETTINGS.suppressWhileActive,
+                  idleMinutes: Number(event.currentTarget.value),
+                })
+              }}
+            >
+              {IDLE_CHOICES.map((minutes) => (
+                <option key={minutes} value={minutes}>
+                  {minutes === 1 ? '1 minute' : `${String(minutes)} minutes`}
+                </option>
+              ))}
+            </select>
+            <span style={selectorIconStyle}>
+              <IconChevronDownOutlineRegular />
+            </span>
+          </div>
+        </div>
+      </div>
+
       <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--dsw-alias-border-l2)' }}>
         <div style={{ ...descriptionStyle, fontWeight: 600 }}>Debug</div>
         <div style={{ ...rowStyle, paddingBottom: 0, borderBottom: 0 }}>
@@ -357,6 +512,32 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
             Send test
           </Button>
         </div>
+        <label style={testFieldStyle}>
+          <span style={descriptionStyle}>Title (blank uses the default)</span>
+          <input
+            type="text"
+            value={testTitle}
+            placeholder="DeepSeek Harness"
+            disabled={busy || status !== 'subscribed'}
+            style={testInputStyle}
+            onChange={(event) => {
+              setTestTitle(event.currentTarget.value)
+            }}
+          />
+        </label>
+        <label style={testFieldStyle}>
+          <span style={descriptionStyle}>Body (blank uses the default)</span>
+          <input
+            type="text"
+            value={testBody}
+            placeholder="Web Push is working."
+            disabled={busy || status !== 'subscribed'}
+            style={testInputStyle}
+            onChange={(event) => {
+              setTestBody(event.currentTarget.value)
+            }}
+          />
+        </label>
       </div>
       {message === undefined ? null : (
         <p aria-live="polite" style={{ ...descriptionStyle, margin: '12px 0 0' }}>

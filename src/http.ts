@@ -37,7 +37,16 @@ export async function readJson(req: IncomingMessage, maxBytes: number, allowEmpt
 }
 
 export function sendJson(res: ServerResponse, status: number, value: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    // Every JSON answer describes the host's current state: the VAPID key a
+    // browser is about to subscribe with, the suppression settings, a delivery
+    // report. A browser that reuses a cached copy of one acts on state the host
+    // has moved past, and for /config that is enough to bind a brand new
+    // subscription to a key pair the host no longer signs with - a subscription
+    // the Push service then refuses for as long as it exists.
+    'cache-control': 'no-store',
+  })
   res.end(JSON.stringify(value))
 }
 
