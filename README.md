@@ -7,9 +7,6 @@
 Receive notifications when a DeepSeek Harness task completes, stops, or needs
 your approval or response.
 
-Version 0.2.0 requires DeepSeek Harness 0.2.x, starting with `0.2.0-rc.2`.
-Harness 0.1.x is not supported by this version.
-
 ## Install
 
 These examples use the `web` profile. Replace `web` with your profile name in
