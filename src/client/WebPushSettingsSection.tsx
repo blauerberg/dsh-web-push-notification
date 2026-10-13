@@ -248,27 +248,24 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
     setBusy(true)
     setMessage(undefined)
     try {
-      // A blank field keeps the server default, so the button behaves exactly as
-      // it did before unless the operator deliberately overrides the copy.
+      const config = await loadConfig()
+      const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
+      const subscription = await registration?.pushManager.getSubscription()
       const result = await sendTest({
         title: testTitle === '' ? undefined : testTitle,
         body: testBody === '' ? undefined : testBody,
+        endpoint: subscription?.endpoint,
       })
       const counts = `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`
-      // A removal is the one outcome worth spelling out: the saved subscription
-      // is gone, so the counters alone would leave the panel describing a
-      // subscription the host no longer holds. Zero everywhere is the other one:
-      // the host holds no subscription at all, which looks like success.
+      const missing = subscription === undefined || subscription === null || result.subscriptionRegistered === false
+      if (missing) setStatus(Notification.permission)
       setMessage(
-        result.removed > 0
-          ? `${counts} The push service no longer accepts ${result.removed === 1 ? 'a saved subscription' : 'some saved subscriptions'}. Enable Web Push again to renew.`
-          : result.sent === 0 && result.failed === 0
-            ? `${counts} This device is not registered with the host yet: turn Enabled on for this device and try again.`
+        missing
+          ? `${counts} This device is not registered with the host. Enable Web Push again to renew.`
+          : result.removed > 0
+            ? `${counts} An expired subscription was removed. Re-enable Web Push on the affected device.`
             : counts,
       )
-      // Reconcile, so the status line and the renewal hint follow the removal
-      // instead of waiting for the next time the panel is opened.
-      if (result.removed > 0) await refresh(preferences)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {

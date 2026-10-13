@@ -182,6 +182,13 @@ describe('suppression settings', () => {
 })
 
 describe('test notification copy', () => {
+  it('validates the optional current-device endpoint in a test request', () => {
+    expect(validateTestMessage({ endpoint: subscription.endpoint }).endpoint).toBe(subscription.endpoint)
+    for (const endpoint of ['http://push.example.test/device', 'https://127.0.0.1/device', 42]) {
+      expect(() => validateTestMessage({ endpoint })).toThrow()
+    }
+  })
+
   it('falls back to the original copy when the caller sends nothing', () => {
     expect(validateTestMessage(undefined)).toEqual(DEFAULT_TEST_MESSAGE)
     expect(validateTestMessage({})).toEqual(DEFAULT_TEST_MESSAGE)

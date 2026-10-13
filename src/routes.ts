@@ -173,7 +173,12 @@ export function createPushRoutes(options: PushRouteOptions): WebRoute[] {
           },
           { onFailure: options.onDeliveryFailure },
         )
-        sendJson(res, 200, report)
+        sendJson(res, 200, {
+          ...report,
+          ...(message.endpoint === undefined
+            ? {}
+            : { subscriptionRegistered: options.store.preferencesOf(message.endpoint) !== undefined }),
+        })
       }),
     },
   ]

@@ -151,6 +151,7 @@ export const DEFAULT_TEST_MESSAGE = {
 export interface TestMessage {
   readonly title: string
   readonly body: string
+  readonly endpoint?: string
 }
 
 const MAX_TEST_TITLE_LENGTH = 120
@@ -170,6 +171,7 @@ export function validateTestMessage(value: unknown): TestMessage {
   return {
     title: testField(value.title, 'title', MAX_TEST_TITLE_LENGTH, DEFAULT_TEST_MESSAGE.title),
     body: testField(value.body, 'body', MAX_TEST_BODY_LENGTH, DEFAULT_TEST_MESSAGE.body),
+    ...(value.endpoint === undefined ? {} : { endpoint: validateEndpoint(value) }),
   }
 }
 

@@ -90,11 +90,16 @@ export function waitForActiveServiceWorker(
 export interface TestNotificationMessage {
   readonly title?: string
   readonly body?: string
+  /** Current device's endpoint; the response reports whether the host retained it. */
+  readonly endpoint?: string
 }
 
-export function sendTest(
-  message: TestNotificationMessage = {},
-): Promise<{ readonly sent: number; readonly removed: number; readonly failed: number }> {
+export function sendTest(message: TestNotificationMessage = {}): Promise<{
+  readonly sent: number
+  readonly removed: number
+  readonly failed: number
+  readonly subscriptionRegistered?: boolean
+}> {
   return request(`${BASE}/test`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
