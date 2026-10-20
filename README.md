@@ -143,6 +143,10 @@ The check runs formatting, lint, typechecking, unit tests, and the distribution
 build. CI also checks against the latest stable Harness release, or the latest
 release candidate when no stable release exists.
 
+## Harness compatibility
+
+The declared compatibility range is DeepSeek Harness `>=0.2.0-rc.2`.
+
 ## License
 
 The project is licensed under [MIT](LICENSE). See
