@@ -396,8 +396,7 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
         <span style={rowTextStyle}>
           <span style={titleStyle}>Subagent runs</span>
           <span style={descriptionStyle}>
-            Notify when a dispatched subagent finishes its own turn. Off, only the session that dispatched it reports
-            the outcome.
+            Also receive notifications from subagents for the event types enabled above.
           </span>
         </span>
         <input
