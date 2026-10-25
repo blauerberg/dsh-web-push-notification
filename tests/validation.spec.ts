@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   declaresPreferences,
-  DEFAULT_TEST_MESSAGE,
   validateEndpoint,
   validatePreviousEndpoint,
   validateSettings,
   validateStoreState,
   validateSubscription,
-  validateTestMessage,
+  validateTestRequest,
 } from '../src/validation.ts'
 
 const subscription = {
@@ -181,35 +180,18 @@ describe('suppression settings', () => {
   })
 })
 
-describe('test notification copy', () => {
-  it('validates the optional current-device endpoint in a test request', () => {
-    expect(validateTestMessage({ endpoint: subscription.endpoint }).endpoint).toBe(subscription.endpoint)
+describe('test notification request', () => {
+  it('validates the optional current-device endpoint', () => {
+    expect(validateTestRequest({ endpoint: subscription.endpoint }).endpoint).toBe(subscription.endpoint)
     for (const endpoint of ['http://push.example.test/device', 'https://127.0.0.1/device', 42]) {
-      expect(() => validateTestMessage({ endpoint })).toThrow()
+      expect(() => validateTestRequest({ endpoint })).toThrow()
     }
   })
 
-  it('falls back to the original copy when the caller sends nothing', () => {
-    expect(validateTestMessage(undefined)).toEqual(DEFAULT_TEST_MESSAGE)
-    expect(validateTestMessage({})).toEqual(DEFAULT_TEST_MESSAGE)
-  })
-
-  it('passes caller-supplied copy through unchanged, newlines included', () => {
-    expect(validateTestMessage({ title: 'Build finished', body: 'line one\nline two' })).toEqual({
-      title: 'Build finished',
-      body: 'line one\nline two',
-    })
-  })
-
-  it('honours an explicit empty string so a title-only notification can be previewed', () => {
-    expect(validateTestMessage({ body: '' })).toEqual({ title: DEFAULT_TEST_MESSAGE.title, body: '' })
-  })
-
-  it('rejects non-string, over-long, and non-object copy', () => {
-    expect(() => validateTestMessage({ title: 42 })).toThrow(/title must be a string/)
-    expect(() => validateTestMessage({ body: 'x'.repeat(1001) })).toThrow(/at most 1000 characters/)
-    expect(() => validateTestMessage({ title: 'x'.repeat(121) })).toThrow(/at most 120 characters/)
-    expect(() => validateTestMessage('DeepSeek Harness')).toThrow(/must be an object/)
-    expect(() => validateTestMessage(['title'])).toThrow(/must be an object/)
+  it('accepts a bodyless request and rejects values that are not objects', () => {
+    expect(validateTestRequest(undefined)).toEqual({})
+    expect(validateTestRequest({})).toEqual({})
+    expect(() => validateTestRequest('DeepSeek Harness')).toThrow(/must be an object/)
+    expect(() => validateTestRequest(['title'])).toThrow(/must be an object/)
   })
 })

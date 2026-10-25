@@ -118,25 +118,6 @@ const checkboxStyle: CSSProperties = {
   accentColor: 'var(--dsw-alias-state-success-primary)',
 }
 
-const testFieldStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 6,
-  marginTop: 12,
-}
-
-const testInputStyle: CSSProperties = {
-  width: '100%',
-  boxSizing: 'border-box',
-  padding: '8px 12px',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 8,
-  background: 'var(--dsw-alias-bg-module-platform)',
-  color: 'var(--dsw-alias-label-primary)',
-  font: 'inherit',
-  fontSize: 13,
-}
-
 export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>): JSX.Element {
   const [status, setStatus] = useState<Status>('loading')
   const [busy, setBusy] = useState(false)
@@ -147,8 +128,6 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
   // Undefined until the config arrives: the controls stay disabled rather than
   // showing defaults that are not what the server holds.
   const [suppression, setSuppression] = useState<SuppressionSettings>()
-  const [testTitle, setTestTitle] = useState('')
-  const [testBody, setTestBody] = useState('')
 
   const refresh = useCallback(async (currentPreferences: NotificationPreferences): Promise<void> => {
     const capability = browserCapability()
@@ -251,11 +230,7 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
       const config = await loadConfig()
       const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
       const subscription = await registration?.pushManager.getSubscription()
-      const result = await sendTest({
-        title: testTitle === '' ? undefined : testTitle,
-        body: testBody === '' ? undefined : testBody,
-        endpoint: subscription?.endpoint,
-      })
+      const result = await sendTest({ endpoint: subscription?.endpoint })
       const counts = `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`
       const missing = subscription === undefined || subscription === null || result.subscriptionRegistered === false
       if (missing) setStatus(Notification.permission)
@@ -512,32 +487,6 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
             Send test
           </Button>
         </div>
-        <label style={testFieldStyle}>
-          <span style={descriptionStyle}>Title (blank uses the default)</span>
-          <input
-            type="text"
-            value={testTitle}
-            placeholder="DeepSeek Harness"
-            disabled={busy || status !== 'subscribed'}
-            style={testInputStyle}
-            onChange={(event) => {
-              setTestTitle(event.currentTarget.value)
-            }}
-          />
-        </label>
-        <label style={testFieldStyle}>
-          <span style={descriptionStyle}>Body (blank uses the default)</span>
-          <input
-            type="text"
-            value={testBody}
-            placeholder="Web Push is working."
-            disabled={busy || status !== 'subscribed'}
-            style={testInputStyle}
-            onChange={(event) => {
-              setTestBody(event.currentTarget.value)
-            }}
-          />
-        </label>
       </div>
       {message === undefined ? null : (
         <p aria-live="polite" style={{ ...descriptionStyle, margin: '12px 0 0' }}>

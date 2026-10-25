@@ -143,45 +143,14 @@ export function validateSettings(value: unknown): SuppressionSettings {
   return { suppressWhileActive: value.suppressWhileActive, idleMinutes }
 }
 
-export const DEFAULT_TEST_MESSAGE = {
-  title: 'DeepSeek Harness',
-  body: 'Web Push is working.',
-} as const
-
-export interface TestMessage {
-  readonly title: string
-  readonly body: string
+export interface TestRequest {
   readonly endpoint?: string
 }
 
-const MAX_TEST_TITLE_LENGTH = 120
-const MAX_TEST_BODY_LENGTH = 1000
-
-/**
- * The debug button ships fixed copy, which cannot answer the question an
- * operator actually has: how does a long or awkward notification wrap on this
- * phone. The body is therefore caller-supplied, defaulting to the original
- * strings so every existing caller keeps working. An absent field takes the
- * default; an explicit empty string is honoured, so a title-only notification
- * can be previewed.
- */
-export function validateTestMessage(value: unknown): TestMessage {
-  if (value === undefined) return { ...DEFAULT_TEST_MESSAGE }
+export function validateTestRequest(value: unknown): TestRequest {
+  if (value === undefined) return {}
   if (!isRecord(value)) throw new Error('test notification must be an object')
-  return {
-    title: testField(value.title, 'title', MAX_TEST_TITLE_LENGTH, DEFAULT_TEST_MESSAGE.title),
-    body: testField(value.body, 'body', MAX_TEST_BODY_LENGTH, DEFAULT_TEST_MESSAGE.body),
-    ...(value.endpoint === undefined ? {} : { endpoint: validateEndpoint(value) }),
-  }
-}
-
-function testField(value: unknown, label: string, maxLength: number, fallback: string): string {
-  if (value === undefined || value === null) return fallback
-  if (typeof value !== 'string') throw new Error(`test notification ${label} must be a string`)
-  if (value.length > maxLength) {
-    throw new Error(`test notification ${label} must be at most ${String(maxLength)} characters`)
-  }
-  return value
+  return value.endpoint === undefined ? {} : { endpoint: validateEndpoint(value) }
 }
 
 export function validateStoreState(value: unknown): PushStoreState {

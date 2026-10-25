@@ -22,7 +22,7 @@ import {
   validatePreviousEndpoint,
   validateSettings,
   validateSubscription,
-  validateTestMessage,
+  validateTestRequest,
 } from './validation.ts'
 
 export const ROUTE_PREFIX = WEB_PUSH_ROUTE_PREFIX
@@ -159,15 +159,15 @@ export function createPushRoutes(options: PushRouteOptions): WebRoute[] {
       kind: 'exact',
       path: TEST_PATH,
       handler: method('POST', async (req, res) => {
-        const message = await clientInput(async () =>
-          validateTestMessage(await readJson(req, options.maxRequestBodyBytes, true)),
+        const testRequest = await clientInput(async () =>
+          validateTestRequest(await readJson(req, options.maxRequestBodyBytes, true)),
         )
         const report = await deliver(
           options.store,
           options.sender,
           {
-            title: message.title,
-            body: message.body,
+            title: 'DeepSeek Harness',
+            body: 'Web Push is working.',
             tag: `dsh-web-push-test-${String(Date.now())}`,
             url: '/',
           },
@@ -175,9 +175,9 @@ export function createPushRoutes(options: PushRouteOptions): WebRoute[] {
         )
         sendJson(res, 200, {
           ...report,
-          ...(message.endpoint === undefined
+          ...(testRequest.endpoint === undefined
             ? {}
-            : { subscriptionRegistered: options.store.preferencesOf(message.endpoint) !== undefined }),
+            : { subscriptionRegistered: options.store.preferencesOf(testRequest.endpoint) !== undefined }),
         })
       }),
     },

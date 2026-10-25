@@ -317,32 +317,7 @@ describe('Web Push routes', () => {
     expect(result.body).toBe('unauthorized')
   })
 
-  it('forwards caller-supplied copy to the test notification', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    store.upsert(subscription)
-    const sent: string[] = []
-    const routes = routesFor({
-      store,
-      sender: { send: async (_subscription, payload) => void sent.push(String(payload)) },
-      maxRequestBodyBytes: 4096,
-      requestRejection: authenticated,
-    })
-
-    const test = response()
-    await find('/__dsh/web-push/test', routes).handler(
-      request('POST', { title: 'Build finished', body: 'line one\nline two' }),
-      test.response,
-    )
-    expect(test.status).toBe(200)
-    expect(sent).toHaveLength(1)
-    expect(JSON.parse(sent[0] ?? '{}')).toMatchObject({
-      title: 'Build finished',
-      body: 'line one\nline two',
-    })
-  })
-
-  it('keeps the original copy when the test request carries none', async () => {
+  it('sends the fixed test copy and checks the current device registration', async () => {
     root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
     const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     store.upsert(subscription)
@@ -355,39 +330,16 @@ describe('Web Push routes', () => {
     })
 
     const test = response()
-    await find('/__dsh/web-push/test', routes).handler(request('POST', {}), test.response)
+    await find('/__dsh/web-push/test', routes).handler(
+      request('POST', { endpoint: subscription.endpoint }),
+      test.response,
+    )
     expect(test.status).toBe(200)
     expect(JSON.parse(sent[0] ?? '{}')).toMatchObject({
       title: 'DeepSeek Harness',
       body: 'Web Push is working.',
     })
-  })
-
-  it('reports invalid test copy without sending anything', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    store.upsert(subscription)
-    let deliveries = 0
-    const routes = routesFor({
-      store,
-      sender: {
-        send: async () => {
-          deliveries += 1
-        },
-      },
-      maxRequestBodyBytes: 4096,
-      requestRejection: authenticated,
-    })
-
-    const notAString = response()
-    await find('/__dsh/web-push/test', routes).handler(request('POST', { title: 42 }), notAString.response)
-    expect(notAString.status).toBe(400)
-    expect(notAString.body).toEqual({ error: 'test notification title must be a string' })
-
-    const tooLong = response()
-    await find('/__dsh/web-push/test', routes).handler(request('POST', { body: 'x'.repeat(1001) }), tooLong.response)
-    expect(tooLong.status).toBe(400)
-    expect(deliveries).toBe(0)
+    expect(test.body).toEqual({ sent: 1, removed: 0, failed: 0, subscriptionRegistered: true })
   })
 
   it('serves the notification artwork even when no session is presented', async () => {
