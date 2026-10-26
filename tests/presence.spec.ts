@@ -2,12 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PRESENCE_PATH, WEB_PUSH_ROUTE_PREFIX } from '../src/contract.ts'
 import { PRESENCE_TTL_MS, PresenceRegistry } from '../src/presence.ts'
 import { ROUTE_PREFIX } from '../src/routes.ts'
-import {
-  PRESENCE_HEARTBEAT_MS,
-  PRESENCE_IDLE_MS,
-  type PresenceView,
-  startPresenceReporting,
-} from '../src/client/presence.ts'
+import { PRESENCE_HEARTBEAT_MS, PRESENCE_IDLE_MS, startPresenceReporting } from '../src/client/presence.ts'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -34,46 +29,47 @@ describe('presence registry', () => {
   })
 
   it('expires a page that stops reporting, so a killed tab cannot mute forever', () => {
-    let now = 0
-    const presence = new PresenceRegistry(PRESENCE_TTL_MS, () => now)
+    vi.useFakeTimers({ now: 0 })
+    const presence = new PresenceRegistry()
     presence.report('page-1', true)
-    now = PRESENCE_TTL_MS
+    vi.advanceTimersByTime(PRESENCE_TTL_MS)
     expect(presence.anyActive()).toBe(true)
-    now = PRESENCE_TTL_MS + 1
+    vi.advanceTimersByTime(1)
     expect(presence.anyActive()).toBe(false)
   })
 
   it('keeps a page active across heartbeats', () => {
-    let now = 0
-    const presence = new PresenceRegistry(PRESENCE_TTL_MS, () => now)
+    vi.useFakeTimers({ now: 0 })
+    const presence = new PresenceRegistry()
     presence.report('page-1', true)
-    now = PRESENCE_TTL_MS - 1
+    vi.advanceTimersByTime(PRESENCE_TTL_MS - 1)
     presence.report('page-1', true)
-    now = PRESENCE_TTL_MS + 1
+    vi.advanceTimersByTime(2)
     expect(presence.anyActive()).toBe(true)
   })
 })
 
 describe('page presence reporter', () => {
-  function setup(initial: { visible?: boolean; focused?: boolean } = {}, options: PresenceOptionsForTest = {}) {
+  function setup(initial: { visible?: boolean; focused?: boolean } = {}, initialPolicy: unknown = { ok: true }) {
+    let policy = initialPolicy
     const fetchMock = vi.fn(
-      async (_url: string, _init?: RequestInit) =>
-        new Response(JSON.stringify(options.policy ?? { ok: true }), { status: 200 }),
+      async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(policy), { status: 200 }),
     )
     const beacon = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('navigator', { sendBeacon: beacon })
     vi.useFakeTimers({ now: 0 })
     const page = fakeView(initial)
-    const stop = startPresenceReporting({
-      view: page.view,
-      ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
-      ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
-    })
+    vi.stubGlobal('document', page.view.document)
+    vi.stubGlobal('window', page.view)
+    const stop = startPresenceReporting()
     return {
       page,
       stop,
       beacon,
+      setPolicy: (next: unknown) => {
+        policy = next
+      },
       posted: (): Array<{ id: string; active: boolean }> =>
         fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)) as { id: string; active: boolean }),
       url: (): unknown => fetchMock.mock.calls.at(0)?.[0],
@@ -118,8 +114,8 @@ describe('page presence reporter', () => {
   })
 
   it('stops claiming attention once the window has been idle, and answers the next input', () => {
-    const harness = setup({ visible: true, focused: true }, { idleMs: 1000, heartbeatMs: 100 })
-    vi.advanceTimersByTime(1100)
+    const harness = setup({ visible: true, focused: true })
+    vi.advanceTimersByTime(PRESENCE_IDLE_MS + PRESENCE_HEARTBEAT_MS)
     expect(harness.posted().at(-1)?.active).toBe(false)
     harness.page.emit('keydown')
     expect(harness.posted().at(-1)?.active).toBe(true)
@@ -127,13 +123,13 @@ describe('page presence reporter', () => {
   })
 
   it('counts cursor movement and touch scrolling as attention, so a reader never falls idle', () => {
-    const harness = setup({ visible: true, focused: true }, { idleMs: 1000, heartbeatMs: 100 })
+    const harness = setup({ visible: true, focused: true })
     for (let step = 0; step < 4; step++) {
-      vi.advanceTimersByTime(900)
+      vi.advanceTimersByTime(PRESENCE_IDLE_MS - 1000)
       harness.page.emit(step % 2 === 0 ? 'pointermove' : 'touchmove')
     }
     expect(harness.posted().every((body) => body.active)).toBe(true)
-    vi.advanceTimersByTime(1100)
+    vi.advanceTimersByTime(PRESENCE_IDLE_MS + PRESENCE_HEARTBEAT_MS)
     expect(harness.posted().at(-1)?.active).toBe(false)
     harness.stop()
   })
@@ -141,15 +137,10 @@ describe('page presence reporter', () => {
   it('adopts the idle window the server reports, so a settings change needs no reload', async () => {
     const harness = setup(
       { visible: true, focused: true },
-      {
-        idleMs: 1000,
-        heartbeatMs: 100,
-        policy: { ok: true, suppression: { suppressWhileActive: true, idleMinutes: 1 } },
-      },
+      { ok: true, suppression: { suppressWhileActive: true, idleMinutes: 30 } },
     )
     await settle()
-    // The server's minute outranks the one-second window this page booted with.
-    vi.advanceTimersByTime(5000)
+    vi.advanceTimersByTime(PRESENCE_IDLE_MS + PRESENCE_HEARTBEAT_MS)
     expect(harness.posted().every((body) => body.active)).toBe(true)
     harness.stop()
   })
@@ -157,14 +148,10 @@ describe('page presence reporter', () => {
   it('ignores an idle window it cannot honour instead of guessing', async () => {
     const harness = setup(
       { visible: true, focused: true },
-      {
-        idleMs: 1000,
-        heartbeatMs: 100,
-        policy: { ok: true, suppression: { suppressWhileActive: true, idleMinutes: 0 } },
-      },
+      { ok: true, suppression: { suppressWhileActive: true, idleMinutes: 0 } },
     )
     await settle()
-    vi.advanceTimersByTime(1100)
+    vi.advanceTimersByTime(PRESENCE_IDLE_MS + PRESENCE_HEARTBEAT_MS)
     expect(harness.posted().at(-1)?.active).toBe(false)
     harness.stop()
   })
@@ -202,6 +189,38 @@ describe('page presence reporter', () => {
     expect(harness.posted()).toHaveLength(count)
     harness.stop()
   })
+
+  it('restarts reporting after a page returns from the back/forward cache', () => {
+    const harness = setup()
+    harness.page.emit('pagehide')
+    expect(harness.beacon).toHaveBeenCalledOnce()
+    vi.advanceTimersByTime(PRESENCE_HEARTBEAT_MS * 2)
+    expect(harness.posted()).toHaveLength(1)
+    harness.page.emit('pageshow')
+    expect(harness.posted().map((body) => body.active)).toEqual([true, true])
+    vi.advanceTimersByTime(PRESENCE_HEARTBEAT_MS)
+    expect(harness.posted()).toHaveLength(3)
+    harness.stop()
+  })
+
+  it('does not send extra reports or create extra timers for repeated input', () => {
+    const harness = setup()
+    for (let step = 0; step < 100; step++) harness.page.emit('pointermove')
+    expect(harness.posted()).toHaveLength(1)
+    vi.advanceTimersByTime(PRESENCE_HEARTBEAT_MS)
+    expect(harness.posted()).toHaveLength(2)
+    harness.stop()
+  })
+
+  it('applies a shorter idle window on the next heartbeat', async () => {
+    const harness = setup()
+    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    expect(harness.posted().every((body) => body.active)).toBe(true)
+    harness.setPolicy({ ok: true, suppression: { suppressWhileActive: true, idleMinutes: 1 } })
+    await vi.advanceTimersByTimeAsync(PRESENCE_HEARTBEAT_MS)
+    expect(harness.posted().at(-1)?.active).toBe(false)
+    harness.stop()
+  })
 })
 
 describe('presence defaults', () => {
@@ -220,13 +239,6 @@ describe('presence defaults', () => {
   })
 })
 
-interface PresenceOptionsForTest {
-  readonly idleMs?: number
-  readonly heartbeatMs?: number
-  /** What the stubbed server answers a report with. */
-  readonly policy?: unknown
-}
-
 function fakeView(initial: { visible?: boolean; focused?: boolean } = {}) {
   const listeners = new Map<string, Set<() => void>>()
   const state = { visible: initial.visible ?? true, focused: initial.focused ?? true }
@@ -238,7 +250,7 @@ function fakeView(initial: { visible?: boolean; focused?: boolean } = {}) {
   const remove = (type: string, listener: () => void): void => {
     listeners.get(type)?.delete(listener)
   }
-  const view: PresenceView = {
+  const view = {
     document: {
       get visibilityState(): string {
         return state.visible ? 'visible' : 'hidden'

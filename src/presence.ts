@@ -19,38 +19,25 @@ export interface PresenceReport {
  */
 export const PRESENCE_TTL_MS = 60_000
 
-interface PresenceEntry {
-  readonly active: boolean
-  readonly at: number
-}
-
 export class PresenceRegistry {
-  private readonly clients = new Map<string, PresenceEntry>()
-
-  constructor(
-    private readonly ttlMs: number = PRESENCE_TTL_MS,
-    private readonly now: () => number = Date.now,
-  ) {}
+  private readonly clients = new Map<string, number>()
 
   report(id: string, active: boolean): void {
-    const at = this.now()
+    const at = Date.now()
     this.prune(at)
-    this.clients.set(id, { active, at })
+    if (active) this.clients.set(id, at)
+    else this.clients.delete(id)
   }
 
   /** True while any page is focused, visible, and recently used. */
   anyActive(): boolean {
-    const at = this.now()
-    this.prune(at)
-    for (const entry of this.clients.values()) {
-      if (entry.active) return true
-    }
-    return false
+    this.prune(Date.now())
+    return this.clients.size > 0
   }
 
   private prune(at: number): void {
-    for (const [id, entry] of this.clients) {
-      if (at - entry.at > this.ttlMs) this.clients.delete(id)
+    for (const [id, reportedAt] of this.clients) {
+      if (at - reportedAt > PRESENCE_TTL_MS) this.clients.delete(id)
     }
   }
 }

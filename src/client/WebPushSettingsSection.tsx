@@ -301,6 +301,7 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
     busy || status === 'loading' || status === 'unsupported' || status === 'insecure-context' || status === 'denied'
   const settingsDisabled = busy || status !== 'subscribed'
   const timingDisabled = busy || suppression === undefined
+  const currentSuppression = suppression ?? DEFAULT_SUPPRESSION_SETTINGS
   const statusColor = statusColorOf(status)
 
   return (
@@ -422,13 +423,13 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
           </span>
           <input
             type="checkbox"
-            checked={suppression?.suppressWhileActive ?? DEFAULT_SUPPRESSION_SETTINGS.suppressWhileActive}
+            checked={currentSuppression.suppressWhileActive}
             disabled={timingDisabled}
             style={checkboxStyle}
             onChange={(event) => {
               void updateSuppression({
+                ...currentSuppression,
                 suppressWhileActive: event.currentTarget.checked,
-                idleMinutes: suppression?.idleMinutes ?? DEFAULT_SUPPRESSION_SETTINGS.idleMinutes,
               })
             }}
           />
@@ -444,13 +445,12 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
           <div style={selectorFrameStyle}>
             <select
               aria-label="Away after"
-              value={suppression?.idleMinutes ?? DEFAULT_SUPPRESSION_SETTINGS.idleMinutes}
-              disabled={timingDisabled || suppression?.suppressWhileActive === false}
+              value={currentSuppression.idleMinutes}
+              disabled={timingDisabled || !currentSuppression.suppressWhileActive}
               style={selectorStyle}
               onChange={(event) => {
                 void updateSuppression({
-                  suppressWhileActive:
-                    suppression?.suppressWhileActive ?? DEFAULT_SUPPRESSION_SETTINGS.suppressWhileActive,
+                  ...currentSuppression,
                   idleMinutes: Number(event.currentTarget.value),
                 })
               }}
