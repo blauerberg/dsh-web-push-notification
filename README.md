@@ -41,9 +41,8 @@ needs outbound access to the browser's push service; it does not need a public
 inbound endpoint for push delivery.
 
 Open **Settings → Notifications**, enable Web Push, and use **Send test**.
-Optional **Title** and **Body** fields customize only the test notification;
-blank fields use the displayed defaults. Test notifications go to all registered
-devices and bypass activity suppression.
+Test notifications use a fixed message, go to all registered devices, and bypass
+activity suppression.
 
 If a push service rejects an expired subscription or its VAPID credentials, the
 host removes that record. **Send test** reports the delivery counts and whether
