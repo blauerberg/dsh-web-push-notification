@@ -1,6 +1,6 @@
 import { applicationServerKey } from '../application-server-key.ts'
 import { WEB_PUSH_ROUTE_PREFIX, type PushSubscriptionJson, type WebPushConfig } from '../contract.ts'
-import type { NotificationPreferences, SuppressionSettings } from '../types.ts'
+import { DEFAULT_NOTIFICATION_PREFERENCES, type NotificationPreferences, type SuppressionSettings } from '../types.ts'
 
 export function loadConfig(): Promise<WebPushConfig> {
   return request<WebPushConfig>(`${WEB_PUSH_ROUTE_PREFIX}/config`, { method: 'GET' })
@@ -23,16 +23,16 @@ export async function refreshServiceWorker(config: WebPushConfig): Promise<void>
   }
 }
 
-export function registerSubscription(
+export function requestPreferences(
   subscription: PushSubscription,
-  preferences: NotificationPreferences,
-): Promise<void> {
+  preferences?: NotificationPreferences,
+): Promise<NotificationPreferences | null> {
   const json = { ...(subscription.toJSON() as PushSubscriptionJson), preferences }
-  return request(`${WEB_PUSH_ROUTE_PREFIX}/subscribe`, {
+  return request<{ preferences: NotificationPreferences | null }>(`${WEB_PUSH_ROUTE_PREFIX}/subscription`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(json),
-  }).then(() => undefined)
+  }).then((result) => result.preferences)
 }
 
 /** Store the account-wide suppression policy and return what the server kept. */
@@ -62,7 +62,7 @@ export async function removeSubscription(subscription: PushSubscription): Promis
   await subscription.unsubscribe()
 }
 
-export async function renewSubscription(config: WebPushConfig, preferences: NotificationPreferences): Promise<void> {
+export async function renewSubscription(config: WebPushConfig): Promise<void> {
   const registration = await navigator.serviceWorker.register(config.serviceWorkerUrl, {
     scope: config.serviceWorkerScope,
   })
@@ -76,20 +76,21 @@ export async function renewSubscription(config: WebPushConfig, preferences: Noti
     userVisibleOnly: true,
     applicationServerKey: applicationServerKey(config.publicKey),
   })
-  await registerSubscription(renewed, preferences)
+  await request(`${WEB_PUSH_ROUTE_PREFIX}/subscribe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...renewed.toJSON(), preferences: DEFAULT_NOTIFICATION_PREFERENCES }),
+  })
 }
 
-export async function reconcileSubscription(
+export async function loadSubscription(
   config: WebPushConfig,
-  preferences: NotificationPreferences,
   signal?: AbortSignal,
-): Promise<'missing' | 'mismatched' | 'registered'> {
+): Promise<NotificationPreferences | null> {
   const subscription = await getSubscription(config)
   signal?.throwIfAborted()
-  if (subscription === null) return 'missing'
-  if (!subscriptionUsesApplicationServerKey(subscription, config.publicKey)) return 'mismatched'
-  await registerSubscription(subscription, preferences)
-  return 'registered'
+  if (subscription === null || !subscriptionUsesApplicationServerKey(subscription, config.publicKey)) return null
+  return requestPreferences(subscription)
 }
 
 /** Wait for the registered worker instead of the page-global registration. */

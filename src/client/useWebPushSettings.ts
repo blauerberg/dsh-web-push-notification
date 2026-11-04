@@ -2,15 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getSubscription,
   loadConfig,
-  reconcileSubscription,
+  loadSubscription,
   refreshServiceWorker,
-  registerSubscription,
+  requestPreferences,
   removeSubscription,
   renewSubscription,
   saveSuppression,
   sendTest,
 } from './api.ts'
-import { readPreferences, writePreferences } from './preferences.ts'
 import { DEFAULT_NOTIFICATION_PREFERENCES, type NotificationPreferences, type SuppressionSettings } from '../types.ts'
 
 export type Status = 'loading' | 'unsupported' | 'insecure-context' | 'default' | 'denied' | 'granted' | 'subscribed'
@@ -40,8 +39,6 @@ export function useWebPushSettings() {
     const controller = new AbortController()
     const { signal } = controller
     lifetime.current = controller
-    const preferences = readPreferences()
-    update(signal, { preferences })
     const capability = browserCapability()
     if (capability !== undefined) update(signal, { status: capability })
     else {
@@ -52,14 +49,11 @@ export function useWebPushSettings() {
           update(signal, { suppression: config.suppression })
           await refreshServiceWorker(config)
           if (signal.aborted) return
-          const subscription = await reconcileSubscription(config, preferences, signal)
+          const preferences = await loadSubscription(config, signal)
           if (signal.aborted) return
           update(signal, {
-            status: subscription === 'registered' ? 'subscribed' : Notification.permission,
-            message:
-              subscription === 'mismatched'
-                ? 'The host Web Push key changed. Enable notifications again to renew this subscription.'
-                : undefined,
+            status: preferences === null ? Notification.permission : 'subscribed',
+            preferences: preferences ?? DEFAULT_NOTIFICATION_PREFERENCES,
           })
         } catch (error) {
           if (!signal.aborted) update(signal, { status: Notification.permission, message: errorMessage(error) })
@@ -69,13 +63,13 @@ export function useWebPushSettings() {
     return () => controller.abort()
   }, [update])
 
-  async function run(operation: (update: UpdateState, signal: AbortSignal) => Promise<void>): Promise<void> {
+  async function run(operation: (update: UpdateState) => Promise<void>): Promise<void> {
     const signal = lifetime.current?.signal
     if (signal === undefined || signal.aborted) return
     const publish: UpdateState = (patch) => update(signal, patch)
     publish({ busy: true, message: undefined })
     try {
-      await operation(publish, signal)
+      await operation(publish)
     } catch (error) {
       publish({ message: errorMessage(error) })
     } finally {
@@ -98,15 +92,19 @@ export function useWebPushSettings() {
       }
       const config = await loadConfig()
       publish({ suppression: config.suppression })
-      await renewSubscription(config, state.preferences)
-      publish({ status: 'subscribed', message: 'Web Push is enabled.' })
+      await renewSubscription(config)
+      publish({ status: 'subscribed', preferences: DEFAULT_NOTIFICATION_PREFERENCES, message: 'Web Push is enabled.' })
     })
 
   const disable = (): Promise<void> =>
     run(async (publish) => {
       const subscription = await getSubscription(await loadConfig())
       if (subscription !== null) await removeSubscription(subscription)
-      publish({ status: Notification.permission, message: 'Web Push is disabled.' })
+      publish({
+        status: Notification.permission,
+        preferences: DEFAULT_NOTIFICATION_PREFERENCES,
+        message: 'Web Push is disabled.',
+      })
     })
 
   const test = (): Promise<void> =>
@@ -116,7 +114,7 @@ export function useWebPushSettings() {
       const counts = `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`
       const missing = subscription === null || result.subscriptionRegistered === false
       publish({
-        ...(missing ? { status: Notification.permission } : {}),
+        ...(missing ? { status: Notification.permission, preferences: DEFAULT_NOTIFICATION_PREFERENCES } : {}),
         message: missing
           ? `${counts} This device is not registered with the host. Enable Web Push again to renew.`
           : result.removed > 0
@@ -129,44 +127,22 @@ export function useWebPushSettings() {
     key: K,
     value: NotificationPreferences[K],
   ): Promise<void> {
-    const previous = state.preferences
-    const next = { ...previous, [key]: value }
-    if (state.status !== 'subscribed') {
-      const signal = lifetime.current?.signal
-      if (signal === undefined || signal.aborted) return
-      update(signal, { preferences: next })
-      writePreferences(next)
-      return
-    }
-    await run(async (publish, signal) => {
-      publish({ preferences: next })
-      writePreferences(next)
-      try {
-        const subscription = await getSubscription(await loadConfig())
-        if (subscription === null) throw new Error('The Web Push subscription is no longer available.')
-        await registerSubscription(subscription, next)
-        publish({ message: 'Notification preferences saved.' })
-      } catch (error) {
-        if (!signal.aborted) {
-          publish({ preferences: previous })
-          writePreferences(previous)
-        }
-        throw error
+    await run(async (publish) => {
+      const subscription = await getSubscription(await loadConfig())
+      const preferences =
+        subscription === null ? null : await requestPreferences(subscription, { ...state.preferences, [key]: value })
+      if (preferences === null) {
+        publish({ status: Notification.permission, preferences: DEFAULT_NOTIFICATION_PREFERENCES })
+        throw new Error('This device is not registered. Enable Web Push again.')
       }
+      publish({ preferences, message: 'Notification preferences saved.' })
     })
   }
 
   const updateSuppression = (next: SuppressionSettings): Promise<void> =>
     run(async (publish) => {
-      const previous = state.suppression
-      publish({ suppression: next })
-      try {
-        const suppression = await saveSuppression(next)
-        publish({ suppression, message: 'Notification timing saved.' })
-      } catch (error) {
-        publish({ suppression: previous })
-        throw error
-      }
+      const suppression = await saveSuppression(next)
+      publish({ suppression, message: 'Notification timing saved.' })
     })
 
   return { ...state, enable, disable, test, updatePreference, updateSuppression }

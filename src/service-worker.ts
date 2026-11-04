@@ -93,6 +93,7 @@ async function post(path: string, body: unknown): Promise<void> {
 
 worker.addEventListener('pushsubscriptionchange', (event) => {
   const replaced = event.oldSubscription?.endpoint
+  if (replaced === undefined) return
   event.waitUntil(
     (async () => {
       try {
@@ -109,7 +110,7 @@ worker.addEventListener('pushsubscriptionchange', (event) => {
         // The server retains the replaced endpoint's preferences across browser rotation.
         const body: PushSubscriptionJson = { ...next.toJSON(), endpoint: next.endpoint, previousEndpoint: replaced }
         await post(`${WEB_PUSH_ROUTE_PREFIX}/subscribe`, body)
-        if (replaced !== undefined && replaced !== next.endpoint) {
+        if (replaced !== next.endpoint) {
           await post(`${WEB_PUSH_ROUTE_PREFIX}/unsubscribe`, { endpoint: replaced })
         }
       } catch {

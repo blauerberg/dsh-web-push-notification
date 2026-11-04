@@ -71,13 +71,6 @@ function browser(subscribed = false, permission: NotificationPermission = 'grant
       return 'granted'
     }),
   }
-  let stored: string | null = null
-  const storage = {
-    getItem: vi.fn(() => stored),
-    setItem: vi.fn((_key: string, value: string) => {
-      stored = value
-    }),
-  }
   const serviceWorker = {
     register: vi.fn(async () => registration),
     getRegistration: vi.fn(async () => registration),
@@ -86,6 +79,8 @@ function browser(subscribed = false, permission: NotificationPermission = 'grant
     switch (url) {
       case '/__dsh/web-push/config':
         return new Response(JSON.stringify(config))
+      case '/__dsh/web-push/subscription':
+        return new Response(JSON.stringify({ preferences: DEFAULT_NOTIFICATION_PREFERENCES }))
       case '/__dsh/web-push/subscribe':
       case '/__dsh/web-push/unsubscribe':
         return new Response('{}')
@@ -98,9 +93,8 @@ function browser(subscribed = false, permission: NotificationPermission = 'grant
   vi.stubGlobal('window', { isSecureContext: true, PushManager: {} })
   vi.stubGlobal('Notification', notification)
   vi.stubGlobal('navigator', { serviceWorker })
-  vi.stubGlobal('localStorage', storage)
   vi.stubGlobal('fetch', fetch)
-  return { fetch, subscription, registration, serviceWorker, notification, storage }
+  return { fetch, subscription, registration, serviceWorker, notification }
 }
 
 it('restores timing controls when enabling succeeds after the initial config request fails', async () => {
@@ -138,7 +132,7 @@ it('requests permission during the enable gesture before fetching config', async
   expect(checkbox(mounted, 'Enabled').props.checked).toBe(true)
 })
 
-it('rolls back an optimistic preference in the panel and storage when the host rejects it', async () => {
+it.each([false, true])('applies a preference only after a successful save (rejected: %s)', async (rejected) => {
   const setup = browser(true)
   const mounted = await mount()
   const response = deferred<Response>()
@@ -148,19 +142,25 @@ it('rolls back an optimistic preference in the panel and storage when the host r
   await act(async () => {
     body().props.onChange({ currentTarget: { value: 'summary' } })
   })
-  expect(body().props.value).toBe('summary')
-  expect(body().props.disabled).toBe(true)
-  expect(JSON.parse(setup.storage.getItem() ?? '{}').bodyMode).toBe('summary')
-
-  await act(async () => response.reject(new Error('Preferences rejected')))
-
   expect(body().props.value).toBe('full')
+  expect(body().props.disabled).toBe(true)
+
+  await act(async () => {
+    if (rejected) response.reject(new Error('Preferences rejected'))
+    else
+      response.resolve(
+        new Response(JSON.stringify({ preferences: { ...DEFAULT_NOTIFICATION_PREFERENCES, bodyMode: 'summary' } })),
+      )
+  })
+
+  expect(body().props.value).toBe(rejected ? 'full' : 'summary')
   expect(body().props.disabled).toBe(false)
-  expect(JSON.parse(setup.storage.getItem() ?? '{}')).toEqual(DEFAULT_NOTIFICATION_PREFERENCES)
-  expect(mounted.root.findByProps({ 'aria-live': 'polite' }).children).toEqual(['Preferences rejected'])
+  expect(mounted.root.findByProps({ 'aria-live': 'polite' }).children).toEqual([
+    rejected ? 'Preferences rejected' : 'Notification preferences saved.',
+  ])
 })
 
-it('shows the server timing value and restores it if a later save fails', async () => {
+it('shows the server timing value and keeps it if a later save fails', async () => {
   const setup = browser()
   const mounted = await mount()
   const timing = () => mounted.root.findByProps({ 'aria-label': 'Away after' })
@@ -211,7 +211,7 @@ it.each(['config', 'worker update', 'subscription lookup'] as const)(
   },
 )
 
-it('does not overwrite a reopened panel or storage when an earlier preference save fails', async () => {
+it('does not overwrite a reopened panel when an earlier preference save fails', async () => {
   const setup = browser(true)
   const previous = await mount()
   const response = deferred<Response>()
@@ -223,12 +223,9 @@ it('does not overwrite a reopened panel or storage when an earlier preference sa
   })
   act(() => previous.unmount())
   const mounted = await mount()
-  const writes = setup.storage.setItem.mock.calls.length
 
   await act(async () => response.reject(new Error('Earlier save failed')))
 
-  expect(setup.storage.setItem).toHaveBeenCalledTimes(writes)
-  expect(JSON.parse(setup.storage.getItem() ?? '{}').bodyMode).toBe('summary')
-  expect(mounted.root.findByProps({ 'aria-label': 'Notification body' }).props.value).toBe('summary')
+  expect(mounted.root.findByProps({ 'aria-label': 'Notification body' }).props.value).toBe('full')
   expect(mounted.root.findAllByProps({ 'aria-live': 'polite' })).toHaveLength(0)
 })

@@ -51,8 +51,9 @@ device to create a subscription with the current keys.
 
 ## Notification behavior
 
-Each browser or installed PWA stores its notification preferences separately.
-These event types are enabled by default:
+The host stores notification preferences for each browser or installed PWA.
+Opening **Settings → Notifications** loads that device's saved preferences.
+Changes appear after the host saves them. These event types are enabled by default:
 
 - Task completed
 - Task stopped or failed
@@ -62,11 +63,18 @@ These event types are enabled by default:
 **Subagent runs** is off by default. Enable it to receive notifications from
 subagent sessions in addition to the parent session.
 
-**Full content** includes the latest response, question, or approval reason.
+**Full content**, the default, includes the latest response, question, or
+approval reason.
 **Summary only** omits those details from the body. Titles include the event
 kind and session name in both modes, for example `Done · Fix the paste bug`.
 Bodies convert Markdown to plain text. Push payloads are encrypted to the
 subscription's `p256dh` key; the push service receives ciphertext.
+
+Disabling Web Push deletes this device's registration and preferences. Enabling
+it again starts with the defaults above. Other devices keep their preferences.
+If the host loses the registration, the settings panel shows Web Push as disabled;
+enable it again to register the device. Browser subscription rotation retains
+preferences while the host still has the registration.
 
 Tapping a notification focuses an existing Harness window and opens its session,
 or opens a new window. Browsers that support notification actions also show

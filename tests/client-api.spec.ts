@@ -1,7 +1,7 @@
 import { applicationServerKey } from '../src/application-server-key.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  reconcileSubscription,
+  loadSubscription,
   refreshServiceWorker,
   renewSubscription,
   saveSuppression,
@@ -60,7 +60,7 @@ describe('client Service Worker helpers', () => {
     expect(subscriptionUsesApplicationServerKey(subscription, 'BAUG')).toBe(false)
   })
 
-  it('restores a matching browser subscription to the host', async () => {
+  it('reads the host preferences for a matching browser subscription', async () => {
     const subscription = {
       options: { applicationServerKey: applicationServerKey('AQID').buffer },
       toJSON: () => ({
@@ -76,11 +76,18 @@ describe('client Service Worker helpers', () => {
         }),
       },
     })
-    const fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const preferences = { ...DEFAULT_NOTIFICATION_PREFERENCES, bodyMode: 'summary' }
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ preferences })))
     vi.stubGlobal('fetch', fetch)
 
-    await expect(reconcileSubscription(CONFIG, DEFAULT_NOTIFICATION_PREFERENCES)).resolves.toBe('registered')
-    expect(fetch).toHaveBeenCalledWith('/__dsh/web-push/subscribe', expect.objectContaining({ method: 'POST' }))
+    await expect(loadSubscription(CONFIG)).resolves.toEqual(preferences)
+    expect(fetch).toHaveBeenCalledWith(
+      '/__dsh/web-push/subscription',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(subscription.toJSON()),
+      }),
+    )
   })
 
   it('replaces even a matching subscription when the user enables notifications', async () => {
@@ -109,7 +116,7 @@ describe('client Service Worker helpers', () => {
     })
     vi.stubGlobal('fetch', fetch)
 
-    await renewSubscription(CONFIG, DEFAULT_NOTIFICATION_PREFERENCES)
+    await renewSubscription(CONFIG)
 
     expect(register).toHaveBeenCalledWith(CONFIG.serviceWorkerUrl, { scope: CONFIG.serviceWorkerScope })
     expect(subscribe).toHaveBeenCalledWith({

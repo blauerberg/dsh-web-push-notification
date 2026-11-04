@@ -203,20 +203,29 @@ describe('Service Worker behavior', () => {
   it.each([
     ['https://push.example.test/old', ['/__dsh/web-push/subscribe', '/__dsh/web-push/unsubscribe']],
     ['https://push.example.test/new', ['/__dsh/web-push/subscribe']],
-    [undefined, ['/__dsh/web-push/subscribe']],
   ])('stores a browser-provided replacement for %s without resubscribing', async (endpoint, expectedPaths) => {
     const worker = loadWorker()
     await worker.fire('pushsubscriptionchange', {
-      oldSubscription: endpoint === undefined ? undefined : { endpoint },
+      oldSubscription: { endpoint },
       newSubscription: browserSubscription(),
     })
     expect(worker.scope.registration.pushManager.subscribe).not.toHaveBeenCalled()
     expect(worker.calls.map((call) => call.path)).toEqual(expectedPaths)
     expect(worker.calls[0].body).toEqual({
       ...browserSubscription().toJSON(),
-      ...(endpoint === undefined ? {} : { previousEndpoint: endpoint }),
+      previousEndpoint: endpoint,
     })
   })
+
+  it.each([null, browserSubscription()])(
+    'leaves registration to the user without a previous subscription: %j',
+    async (newSubscription) => {
+      const worker = loadWorker()
+      await worker.fire('pushsubscriptionchange', { newSubscription })
+      expect(worker.scope.registration.pushManager.subscribe).not.toHaveBeenCalled()
+      expect(worker.calls).toEqual([])
+    },
+  )
 
   it.each(['config', 'browser subscription', 'storage'])(
     'keeps the old endpoint when renewal fails at %s',

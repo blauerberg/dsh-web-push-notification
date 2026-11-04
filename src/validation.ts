@@ -59,11 +59,8 @@ export function validatePreviousEndpoint(value: unknown): string | undefined {
 }
 
 /**
- * Whether a subscription request carried its own notification preferences.
- *
- * `validateSubscription` answers that omission with the defaults, which is right
- * for a first registration and wrong for a renewal: a device that chose "summary
- * only" would be switched back to full bodies by a rotation it never asked for.
+ * `validateSubscription` supplies defaults for omitted preferences. Reads and
+ * rotations must distinguish omission to preserve the device's saved choices.
  */
 export function declaresPreferences(value: unknown): boolean {
   return isRecord(value) && value.preferences !== undefined

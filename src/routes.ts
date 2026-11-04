@@ -111,17 +111,31 @@ export function createPushRoutes(options: PushRouteOptions): WebRoute[] {
         const subscription = await clientInput(async () => {
           const body = await readJson(req, options.maxRequestBodyBytes)
           const incoming = validateSubscription(body)
-          // A rotated subscription arrives without preferences, because the
-          // worker cannot read the ones this device chose. Inheriting them from
-          // the record it replaces keeps a "summary only" device from being
-          // switched back to full bodies by a rotation it never asked for.
+          // The worker has no preferences; defaults would expose summary-only bodies.
           if (declaresPreferences(body)) return incoming
           const previous = validatePreviousEndpoint(body)
-          const inherited = previous === undefined ? undefined : options.store.preferencesOf(previous)
-          return inherited === undefined ? incoming : { ...incoming, preferences: inherited }
+          const inherited =
+            options.store.preferencesOf(incoming.endpoint) ??
+            (previous === undefined ? undefined : options.store.preferencesOf(previous))
+          if (inherited === undefined) throw new HttpError(404, 'Enable Web Push to register this device.')
+          return { ...incoming, preferences: inherited }
         })
         options.store.upsert(subscription)
         sendJson(res, 200, { ok: true })
+      }),
+    },
+    {
+      kind: 'exact',
+      path: `${ROUTE_PREFIX}/subscription`,
+      handler: method('POST', async (req, res) => {
+        const { subscription, update } = await clientInput(async () => {
+          const body = await readJson(req, options.maxRequestBodyBytes)
+          return { subscription: validateSubscription(body), update: declaresPreferences(body) }
+        })
+        const current = options.store.preferencesOf(subscription.endpoint)
+        const preferences = current === undefined ? null : update ? subscription.preferences : current
+        if (current !== undefined && update) options.store.upsert(subscription)
+        sendJson(res, 200, { preferences })
       }),
     },
     {

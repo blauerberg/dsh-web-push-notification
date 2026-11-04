@@ -344,7 +344,7 @@ function statusLabel(status: Status): string {
     case 'denied':
       return 'denied'
     case 'granted':
-      return 'granted'
+      return 'not registered'
     case 'subscribed':
       return 'subscribed'
   }
@@ -363,7 +363,7 @@ function statusDescription(status: Status): string {
     case 'denied':
       return 'Browser notifications are blocked for this site.'
     case 'granted':
-      return 'Permission is granted, but Web Push is not enabled.'
+      return 'Enable Web Push to register this browser with the host.'
     case 'subscribed':
       return 'This browser is subscribed to Web Push.'
   }

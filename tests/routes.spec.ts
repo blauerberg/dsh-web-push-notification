@@ -159,9 +159,10 @@ describe('Web Push routes', () => {
     )
     expect(rotated.status).toBe(200)
     expect(store.list().find((record) => record.endpoint.endsWith('/two'))?.preferences).toEqual(chosen)
+  })
 
-    // A first registration still gets the defaults, and so does a renewal that
-    // names an endpoint this host has never seen.
+  it('requires explicit preferences when the host has no registration to renew', async () => {
+    const routes = routesFor()
     for (const endpoint of ['https://push.example.test/send/three', 'https://push.example.test/send/four']) {
       const fresh = response()
       await find('/__dsh/web-push/subscribe', routes).handler(
@@ -173,9 +174,79 @@ describe('Web Push routes', () => {
         }),
         fresh.response,
       )
-      expect(fresh.status, endpoint).toBe(200)
-      expect(store.list().find((record) => record.endpoint === endpoint)?.preferences.bodyMode, endpoint).toBe('full')
+      expect(fresh.status, endpoint).toBe(404)
+      expect(store.preferencesOf(endpoint)).toBeUndefined()
     }
+  })
+
+  it('retains preferences when rotation reports an already registered endpoint', async () => {
+    const chosen = { ...subscription.preferences, bodyMode: 'summary' as const, turnCompleted: false }
+    store.upsert({ ...subscription, preferences: chosen })
+    const result = response()
+    await find('/__dsh/web-push/subscribe', routesFor()).handler(
+      request('POST', {
+        ...subscription,
+        preferences: undefined,
+        previousEndpoint: 'https://push.example.test/unknown',
+      }),
+      result.response,
+    )
+    expect(result.status).toBe(200)
+    expect(store.preferencesOf(subscription.endpoint)).toEqual(chosen)
+  })
+
+  it('reads and saves preferences only for an existing registration', async () => {
+    const route = find('/__dsh/web-push/subscription', routesFor())
+    const chosen = { ...subscription.preferences, bodyMode: 'summary' as const, question: false }
+    store.upsert(subscription)
+    const persist = vi.spyOn(store, 'upsert')
+    const read = response()
+    await route.handler(request('POST', { ...subscription, preferences: undefined }), read.response)
+    expect(read.body).toEqual({ preferences: subscription.preferences })
+    expect(persist).not.toHaveBeenCalled()
+
+    const saved = response()
+    await route.handler(request('POST', { ...subscription, preferences: chosen }), saved.response)
+    expect(saved.status).toBe(200)
+    expect(saved.body).toEqual({ preferences: chosen })
+    expect(PushStore.open(join(root, 'state.json'), () => vapidKeys).preferencesOf(subscription.endpoint)).toEqual(
+      chosen,
+    )
+
+    store.remove(subscription.endpoint)
+    for (const preferences of [undefined, chosen]) {
+      const missing = response()
+      await route.handler(request('POST', { ...subscription, preferences }), missing.response)
+      expect(missing.body).toEqual({ preferences: null })
+      expect(store.list()).toEqual([])
+    }
+  })
+
+  it('rejects invalid preference changes without changing the stored choices', async () => {
+    store.upsert(subscription)
+    const route = find('/__dsh/web-push/subscription', routesFor())
+    for (const preferences of [
+      null,
+      [],
+      { ...subscription.preferences, question: undefined },
+      { ...subscription.preferences, bodyMode: 'preview' },
+    ]) {
+      const result = response()
+      await route.handler(request('POST', { ...subscription, preferences }), result.response)
+      expect(result.status).toBe(400)
+      expect(store.preferencesOf(subscription.endpoint)).toEqual(subscription.preferences)
+    }
+  })
+
+  it('reports a storage failure instead of confirming unsaved preferences', async () => {
+    store.upsert(subscription)
+    vi.spyOn(store, 'upsert').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    const result = response()
+    await find('/__dsh/web-push/subscription', routesFor()).handler(request('POST', subscription), result.response)
+    expect(result.status).toBe(500)
+    expect(result.body).toEqual({ error: 'internal server error' })
   })
 
   it('keeps a failed delivery from rejecting the test route', async () => {
@@ -282,25 +353,28 @@ describe('Web Push routes', () => {
     expect(presence.anyActive()).toBe(true)
   })
 
-  it('serves presence only over an authenticated POST carrying JSON', async () => {
-    const wrongMethod = response()
-    await find(PRESENCE_PATH, routesFor()).handler(request('GET'), wrongMethod.response)
-    expect(wrongMethod.status).toBe(405)
+  it.each([PRESENCE_PATH, '/__dsh/web-push/subscription'])(
+    'serves %s only over an authenticated POST carrying JSON',
+    async (path) => {
+      const wrongMethod = response()
+      await find(path, routesFor()).handler(request('GET'), wrongMethod.response)
+      expect(wrongMethod.status).toBe(405)
 
-    const wrongType = response()
-    await find(PRESENCE_PATH, routesFor()).handler(
-      request('POST', { id: 'page-1', active: true }, 'application/jsonp'),
-      wrongType.response,
-    )
-    expect(wrongType.status).toBe(415)
+      const wrongType = response()
+      await find(path, routesFor()).handler(
+        request('POST', { id: 'page-1', active: true }, 'application/jsonp'),
+        wrongType.response,
+      )
+      expect(wrongType.status).toBe(415)
 
-    const unauthenticated = response()
-    const gated = routesFor({ requestRejection: () => 401 })
-    await find(PRESENCE_PATH, gated).handler(request('POST', { id: 'page-1', active: true }), unauthenticated.response)
-    expect(unauthenticated.status).toBe(401)
-    expect(unauthenticated.body).toBe('unauthorized')
-    expect(presence.anyActive()).toBe(false)
-  })
+      const unauthenticated = response()
+      const gated = routesFor({ requestRejection: () => 401 })
+      await find(path, gated).handler(request('POST', { id: 'page-1', active: true }), unauthenticated.response)
+      expect(unauthenticated.status).toBe(401)
+      expect(unauthenticated.body).toBe('unauthorized')
+      expect(presence.anyActive()).toBe(false)
+    },
+  )
 
   it('stores the suppression policy and hands it back to every open page', async () => {
     const routes = routesFor()

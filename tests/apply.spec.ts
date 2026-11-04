@@ -163,6 +163,7 @@ describe('host plugin registration', () => {
       '/__dsh/web-push/notification-icon.png',
       '/__dsh/web-push/notification-badge.png',
       '/__dsh/web-push/subscribe',
+      '/__dsh/web-push/subscription',
       '/__dsh/web-push/unsubscribe',
       '/__dsh/web-push/presence',
       '/__dsh/web-push/settings',
