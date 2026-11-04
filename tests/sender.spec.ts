@@ -49,7 +49,7 @@ function mockTransport() {
         return request
       },
     })
-    return request as ClientRequest
+    return request as unknown as ClientRequest
   }) as typeof https.request)
   return requests
 }

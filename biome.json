@@ -10,6 +10,7 @@
       "biome.json",
       "package.json",
       "tsconfig.json",
+      "tsconfig.test.json",
       "dsh.plugin.json",
       "build.mjs",
       "src/**/*.ts",

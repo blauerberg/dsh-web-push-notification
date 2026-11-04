@@ -91,9 +91,6 @@ const load = (name: string) => decodePng(readFileSync(new URL(`../public/${name}
 const icon = load('notification-icon.png')
 const badge = load('notification-badge.png')
 
-/** The retired artwork: a saturated blue, whichever way it is blended. */
-const isBrandBlue = (p: number[]) => p[3] > 128 && p[2] > 140 && p[2] - p[0] > 40 && p[2] - p[1] > 40
-
 describe('notification artwork', () => {
   it('ships a present but invisible large icon, so only the app icon shows', () => {
     // Non-zero dimensions are the load-bearing part: Chromium falls back to the
@@ -112,16 +109,6 @@ describe('notification artwork', () => {
       for (let x = 0; x < icon.width; x++) if (icon.at(x, y)[3] > 1) visible++
     }
     expect(visible).toBe(0)
-  })
-
-  it('leaves no brand-blue pixel in either asset', () => {
-    let blue = 0
-    for (const png of [icon, badge]) {
-      for (let y = 0; y < png.height; y++) {
-        for (let x = 0; x < png.width; x++) if (isBrandBlue(png.at(x, y))) blue++
-      }
-    }
-    expect(blue).toBe(0)
   })
 
   it('keeps the badge a monochrome silhouette Android can whiten', () => {

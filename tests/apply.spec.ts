@@ -2,54 +2,95 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, SESSION_FORMAT_VERSION, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { apply, Config, DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_VAPID_SUBJECT } from '../src/index.ts'
 import { PushStore } from '../src/store.ts'
+import { subscriptionFixture, vapidKeys } from './fixtures.ts'
+import { request, response } from './http.ts'
 
 const webPush = vi.hoisted(() => ({
   generateVAPIDKeys: vi.fn(() => ({ publicKey: 'AQID', privateKey: 'BAUG' })),
-  sendNotification: vi.fn(async () => ({})),
+  sendNotification: vi.fn<typeof import('web-push').sendNotification>(async () => ({
+    statusCode: 201,
+    headers: {},
+    body: '',
+  })),
   getVapidHeaders: vi.fn(),
 }))
 
 vi.mock('web-push', () => ({ default: webPush }))
 
-let root: string | undefined
+let root: string
+const contexts: Context[] = []
 
-afterEach(() => {
-  if (root !== undefined) rmSync(root, { recursive: true, force: true })
-  root = undefined
-  vi.clearAllMocks()
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
 })
 
+afterEach(async () => {
+  await Promise.all(contexts.splice(0).map((ctx) => ctx.fiber.dispose()))
+  rmSync(root, { recursive: true, force: true })
+  vi.resetAllMocks()
+  vi.restoreAllMocks()
+})
+
+function createContext(baseDir = root, profile?: { name: string; dir: string }) {
+  const ctx = new Context().extend({ baseUrl: `${pathToFileURL(baseDir).href}/` })
+  const routes: WebRoute[] = []
+  ctx.provide('connection', {
+    requestRejection: () => undefined,
+  } satisfies Pick<Context['connection'], 'requestRejection'>)
+  ctx.provide('webServer', {
+    register(route: WebRoute) {
+      routes.push(route)
+      return () => {
+        routes.splice(routes.indexOf(route), 1)
+      }
+    },
+  } satisfies Pick<Context['webServer'], 'register'>)
+  if (profile !== undefined) ctx.provide('profileContext', profile)
+  const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => undefined)
+  vi.spyOn(ctx.logger, 'info').mockImplementation(() => undefined)
+  contexts.push(ctx)
+  return { ctx, routes, warn }
+}
+
+function completedTurn(text = 'The answer.', origin?: 'subagent') {
+  const id = SessionId(origin === 'subagent' ? 'session-child' : 'session-parent')
+  const session = Session.create(id, undefined, {
+    version: SESSION_FORMAT_VERSION,
+    id,
+    createdAt: 0,
+    isSeeded: false,
+    ...(origin === undefined ? {} : { origin }),
+  })
+  session.append(
+    'assistant/message',
+    {
+      turn: 1,
+      step: 1,
+      message: {
+        id: 'assistant-1' as SessionEvent<'assistant/message'>['data']['message']['id'],
+        role: 'assistant',
+        source: { kind: 'model', provider: 'test', model: 'test' },
+        content: [{ type: 'text', text }],
+      },
+      stream: [],
+    },
+    { surfaceOp: 'append' },
+  )
+  const end = session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  return { session, end }
+}
+
 describe('host plugin registration', () => {
-  it('registers every route and returns their disposers through the effect', () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
-    const routes: Array<{ path: string }> = []
-    const disposers: Array<() => void> = []
-    const ctx = {
-      baseUrl: `${pathToFileURL(root).href}/`,
-      connection: { requestRejection: () => undefined },
-      webServer: {
-        register(route: { path: string }) {
-          routes.push(route)
-          return () => {
-            routes.splice(routes.indexOf(route), 1)
-          }
-        },
-      },
-      logger: { warn: vi.fn() },
-      on() {
-        return () => {}
-      },
-      effect(factory: () => (() => void) | undefined) {
-        const dispose = factory()
-        if (dispose !== undefined) disposers.push(dispose)
-      },
-    }
-    apply(ctx as never, {
+  it('registers every route and returns their disposers through the effect', async () => {
+    const { ctx, routes } = createContext()
+    apply(ctx, {
       vapidSubject: 'mailto:test@example.invalid',
       storagePath: join(root, 'state.json'),
       maxRequestBodyBytes: 1024,
@@ -66,34 +107,19 @@ describe('host plugin registration', () => {
       '/__dsh/web-push/settings',
       '/__dsh/web-push/test',
     ])
-    for (const dispose of disposers) dispose()
+    await ctx.fiber.dispose()
     expect(routes).toEqual([])
   })
 
   it('keeps each profile\u2019s state inside that profile\u2019s directory', () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const previousHome = process.env.DSH_HOME
     process.env.DSH_HOME = join(root, 'home')
     try {
       const stateFor = (profile: string): string => {
         const dir = join(root, 'profiles', profile)
         mkdirSync(dir, { recursive: true })
-        const ctx = {
-          baseUrl: `${pathToFileURL(dir).href}/`,
-          get(name: string) {
-            return name === 'profileContext' ? { name: profile, dir } : undefined
-          },
-          connection: { requestRejection: () => undefined },
-          webServer: { register: () => () => {} },
-          logger: { info: vi.fn(), warn: vi.fn() },
-          on() {
-            return () => {}
-          },
-          effect(factory: () => (() => void) | undefined) {
-            factory()
-          },
-        }
-        apply(ctx as never, { vapidSubject: 'mailto:test@example.invalid', maxRequestBodyBytes: 1024 })
+        const { ctx } = createContext(dir, { name: profile, dir })
+        apply(ctx, { vapidSubject: 'mailto:test@example.invalid', maxRequestBodyBytes: 1024 })
         return join(dir, 'web-push', 'state.json')
       }
 
@@ -113,7 +139,6 @@ describe('host plugin registration', () => {
   })
 
   it('inherits the key pair a deployment kept at the Harness home before it ran in a profile', () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const previousHome = process.env.DSH_HOME
     process.env.DSH_HOME = join(root, 'home')
     try {
@@ -139,22 +164,8 @@ describe('host plugin registration', () => {
 
       const dir = join(root, 'profiles', 'web')
       mkdirSync(dir, { recursive: true })
-      const ctx = {
-        baseUrl: `${pathToFileURL(dir).href}/`,
-        get(name: string) {
-          return name === 'profileContext' ? { name: 'web', dir } : undefined
-        },
-        connection: { requestRejection: () => undefined },
-        webServer: { register: () => () => {} },
-        logger: { info: vi.fn(), warn: vi.fn() },
-        on() {
-          return () => {}
-        },
-        effect(factory: () => (() => void) | undefined) {
-          factory()
-        },
-      }
-      apply(ctx as never, { vapidSubject: 'mailto:test@example.invalid', maxRequestBodyBytes: 1024 })
+      const { ctx } = createContext(dir, { name: 'web', dir })
+      apply(ctx, { vapidSubject: 'mailto:test@example.invalid', maxRequestBodyBytes: 1024 })
 
       const persisted = JSON.parse(readFileSync(join(dir, 'web-push', 'state.json'), 'utf8')) as {
         vapid: { publicKey: string }
@@ -174,41 +185,23 @@ describe('host plugin registration', () => {
   })
 
   it('delivers an event to eligible subscriptions and contains one send failure', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const storagePath = join(root, 'state.json')
-    const store = PushStore.open(storagePath, () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    store.upsert(subscription('https://push.example.test/full', 'full', true))
-    store.upsert(subscription('https://push.example.test/summary', 'summary', true))
-    store.upsert(subscription('https://push.example.test/disabled', 'full', false))
+    const store = PushStore.open(storagePath, () => vapidKeys)
+    store.upsert(subscriptionFixture('https://push.example.test/full'))
+    store.upsert(subscriptionFixture('https://push.example.test/summary', { bodyMode: 'summary' }))
+    store.upsert(subscriptionFixture('https://push.example.test/disabled', { turnCompleted: false }))
     webPush.sendNotification.mockImplementation(async (value) => {
       if (value.endpoint.endsWith('/full')) throw new Error('network down')
-      return {}
+      return { statusCode: 201, headers: {}, body: '' }
     })
-    let onSessionEvent: ((session: Session, event: SessionEvent) => void) | undefined
-    const warn = vi.fn()
-    const ctx = {
-      connection: { requestRejection: () => undefined },
-      webServer: { register: () => () => {} },
-      logger: { warn },
-      on(name: string, listener: (session: Session, event: SessionEvent) => void) {
-        if (name === 'session/event') onSessionEvent = listener
-        return () => {}
-      },
-      effect(factory: () => (() => void) | undefined) {
-        factory()
-      },
-    }
-    apply(ctx as never, {
+    const { ctx, warn } = createContext()
+    apply(ctx, {
       vapidSubject: 'mailto:test@example.invalid',
       storagePath,
       maxRequestBodyBytes: 1024,
     })
-    const assistant = event({
-      type: 'assistant/message',
-      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'The answer.' }] } },
-    })
-    const end = event({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
-    onSessionEvent?.({ id: 'session-1', header: {}, snapshotEvents: () => [assistant, end] } as Session, end)
+    const { session, end } = completedTurn()
+    ctx.emit('session/event', session, end)
 
     await vi.waitFor(() => {
       expect(webPush.sendNotification).toHaveBeenCalledTimes(2)
@@ -235,138 +228,65 @@ describe('host plugin registration', () => {
   })
 
   it('sends nothing while a page is in focus, and resumes once no page is', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const storagePath = join(root, 'state.json')
-    const store = PushStore.open(storagePath, () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    store.upsert(subscription('https://push.example.test/full', 'full', true))
-    const registered: RouteCapture[] = []
-    let onSessionEvent: ((session: Session, event: SessionEvent) => void) | undefined
-    const ctx = {
-      connection: { requestRejection: () => undefined },
-      webServer: {
-        register(route: RouteCapture) {
-          registered.push(route)
-          return () => {}
-        },
-      },
-      logger: { warn: vi.fn() },
-      on(name: string, listener: (session: Session, event: SessionEvent) => void) {
-        if (name === 'session/event') onSessionEvent = listener
-        return () => {}
-      },
-      effect(factory: () => (() => void) | undefined) {
-        factory()
-      },
-    }
-    apply(ctx as never, {
+    const store = PushStore.open(storagePath, () => vapidKeys)
+    store.upsert(subscriptionFixture('https://push.example.test/full'))
+    const { ctx, routes } = createContext()
+    apply(ctx, {
       vapidSubject: 'mailto:test@example.invalid',
       storagePath,
       maxRequestBodyBytes: 1024,
     })
-    const presenceRoute = registered.find((route) => route.path === '/__dsh/web-push/presence')
-    const assistant = event({
-      type: 'assistant/message',
-      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'The answer.' }] } },
-    })
-    const end = event({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
-    const session = { id: 'session-1', header: {}, snapshotEvents: () => [assistant, end] } as Session
+    const presenceRoute = routes.find((route) => route.path === '/__dsh/web-push/presence')
+    const { session, end } = completedTurn()
 
     expect((await reportPresence(presenceRoute, { id: 'desktop-page', active: true })).status).toBe(200)
-    onSessionEvent?.(session, end)
+    ctx.emit('session/event', session, end)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(webPush.sendNotification).not.toHaveBeenCalled()
 
     expect((await reportPresence(presenceRoute, { id: 'desktop-page', active: false })).status).toBe(200)
-    onSessionEvent?.(session, end)
+    ctx.emit('session/event', session, end)
     await vi.waitFor(() => {
       expect(webPush.sendNotification).toHaveBeenCalledTimes(1)
     })
   })
 
   it('keeps delivering while a page is in focus once the quiet period is switched off', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const storagePath = join(root, 'state.json')
-    const store = PushStore.open(storagePath, () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
+    const store = PushStore.open(storagePath, () => vapidKeys)
     // The operator's own choice in Settings, read back from storage on boot.
     store.setSettings({ suppressWhileActive: false, idleMinutes: 10 })
-    store.upsert(subscription('https://push.example.test/full', 'full', true))
-    const registered: RouteCapture[] = []
-    let onSessionEvent: ((session: Session, event: SessionEvent) => void) | undefined
-    const ctx = {
-      connection: { requestRejection: () => undefined },
-      webServer: {
-        register(route: RouteCapture) {
-          registered.push(route)
-          return () => {}
-        },
-      },
-      logger: { warn: vi.fn() },
-      on(name: string, listener: (session: Session, event: SessionEvent) => void) {
-        if (name === 'session/event') onSessionEvent = listener
-        return () => {}
-      },
-      effect(factory: () => (() => void) | undefined) {
-        factory()
-      },
-    }
-    apply(ctx as never, {
+    store.upsert(subscriptionFixture('https://push.example.test/full'))
+    const { ctx, routes } = createContext()
+    apply(ctx, {
       vapidSubject: 'mailto:test@example.invalid',
       storagePath,
       maxRequestBodyBytes: 1024,
     })
-    const presenceRoute = registered.find((route) => route.path === '/__dsh/web-push/presence')
-    const assistant = event({
-      type: 'assistant/message',
-      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'The answer.' }] } },
-    })
-    const end = event({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
-    const session = { id: 'session-1', header: {}, snapshotEvents: () => [assistant, end] } as Session
+    const presenceRoute = routes.find((route) => route.path === '/__dsh/web-push/presence')
+    const { session, end } = completedTurn()
 
     expect((await reportPresence(presenceRoute, { id: 'desktop-page', active: true })).status).toBe(200)
-    onSessionEvent?.(session, end)
+    ctx.emit('session/event', session, end)
     await vi.waitFor(() => {
       expect(webPush.sendNotification).toHaveBeenCalledTimes(1)
     })
   })
 
   it("keeps a subagent's own turn quiet unless a device asks for it", async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const storagePath = join(root, 'state.json')
-    const store = PushStore.open(storagePath, () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    store.upsert(subscription('https://push.example.test/quiet', 'full', true))
-    store.upsert(subscription('https://push.example.test/asks', 'full', true, true))
-    let onSessionEvent: ((session: Session, event: SessionEvent) => void) | undefined
-    const ctx = {
-      connection: { requestRejection: () => undefined },
-      webServer: { register: () => () => {} },
-      logger: { warn: vi.fn() },
-      on(name: string, listener: (session: Session, event: SessionEvent) => void) {
-        if (name === 'session/event') onSessionEvent = listener
-        return () => {}
-      },
-      effect(factory: () => (() => void) | undefined) {
-        factory()
-      },
-    }
-    apply(ctx as never, {
+    const store = PushStore.open(storagePath, () => vapidKeys)
+    store.upsert(subscriptionFixture('https://push.example.test/quiet'))
+    store.upsert(subscriptionFixture('https://push.example.test/asks', { subagentRuns: true }))
+    const { ctx } = createContext()
+    apply(ctx, {
       vapidSubject: 'mailto:test@example.invalid',
       storagePath,
       maxRequestBodyBytes: 1024,
     })
-    const assistant = event({
-      type: 'assistant/message',
-      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'Found it.' }] } },
-    })
-    const end = event({ type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
-
-    // A subagent runs in a session whose header says so; the dispatching session
-    // reports the same work, so only the device that asked hears about the child.
-    const child = {
-      id: 'session-child',
-      header: { origin: 'subagent' },
-      snapshotEvents: () => [assistant, end],
-    } as unknown as Session
-    onSessionEvent?.(child, end)
+    const child = completedTurn('Found it.', 'subagent')
+    ctx.emit('session/event', child.session, child.end)
     await vi.waitFor(() => {
       expect(webPush.sendNotification).toHaveBeenCalledTimes(1)
     })
@@ -377,12 +297,8 @@ describe('host plugin registration', () => {
     )
 
     // A top-level session still reaches every device that enabled the kind.
-    const parent = {
-      id: 'session-parent',
-      header: {},
-      snapshotEvents: () => [assistant, end],
-    } as unknown as Session
-    onSessionEvent?.(parent, end)
+    const parent = completedTurn('Found it.')
+    ctx.emit('session/event', parent.session, parent.end)
     await vi.waitFor(() => {
       expect(webPush.sendNotification).toHaveBeenCalledTimes(3)
     })
@@ -397,7 +313,6 @@ describe('host plugin registration', () => {
   })
 
   it('falls back to the Harness home outside a profile, and adopts the legacy file it finds', () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-apply-'))
     const packageBase = mkdtempSync(join(tmpdir(), 'dsh-web-push-pkg-'))
     const previousHome = process.env.DSH_HOME
     process.env.DSH_HOME = root
@@ -408,22 +323,8 @@ describe('host plugin registration', () => {
         legacyPath,
         JSON.stringify({ version: 1, vapid: { publicKey: 'LEGACYKEY', privateKey: 'BAUG' }, subscriptions: [] }),
       )
-      const ctx = {
-        baseUrl: `${pathToFileURL(packageBase).href}/`,
-        get() {
-          return undefined
-        },
-        connection: { requestRejection: () => undefined },
-        webServer: { register: () => () => {} },
-        logger: { info: vi.fn(), warn: vi.fn() },
-        on() {
-          return () => {}
-        },
-        effect(factory: () => (() => void) | undefined) {
-          factory()
-        },
-      }
-      apply(ctx as never, {
+      const { ctx } = createContext(packageBase)
+      apply(ctx, {
         vapidSubject: 'mailto:test@example.invalid',
         maxRequestBodyBytes: 1024,
       })
@@ -444,47 +345,9 @@ describe('host plugin registration', () => {
   })
 })
 
-function subscription(endpoint: string, bodyMode: 'full' | 'summary', turnCompleted: boolean, subagentRuns = false) {
-  return {
-    endpoint,
-    expirationTime: null,
-    keys: { p256dh: 'AQID', auth: 'BAUG' },
-    preferences: { turnCompleted, turnFailed: true, approval: true, question: true, subagentRuns, bodyMode },
-  }
-}
-
-function event(value: unknown): SessionEvent {
-  return value as SessionEvent
-}
-
-interface RouteCapture {
-  readonly path: string
-  readonly handler: (req: never, res: never) => unknown
-}
-
-async function reportPresence(
-  route: RouteCapture | undefined,
-  body: unknown,
-): Promise<{ status: number; body: string }> {
+async function reportPresence(route: WebRoute | undefined, body: unknown) {
   if (route === undefined) throw new Error('presence route is not registered')
-  const payload = Buffer.from(JSON.stringify(body))
-  const request = {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'content-length': String(payload.length) },
-    async *[Symbol.asyncIterator]() {
-      yield payload
-    },
-  }
-  const response = {
-    status: 0,
-    body: '',
-    writeHead(status: number) {
-      this.status = status
-    },
-    end(text?: string) {
-      this.body = text ?? ''
-    },
-  }
-  await route.handler(request as never, response as never)
-  return response
+  const result = response()
+  await route.handler(request('POST', body), result.response)
+  return result
 }

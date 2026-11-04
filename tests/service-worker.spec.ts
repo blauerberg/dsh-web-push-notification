@@ -1,149 +1,236 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { NOTIFICATION_BADGE_PATH, NOTIFICATION_ICON_PATH } from '../src/routes.ts'
 import { SERVICE_WORKER_SOURCE } from '../src/service-worker.ts'
 
 interface WorkerCall {
   readonly path: string
+  readonly init: RequestInit | undefined
   readonly body: Record<string, unknown> | undefined
 }
 
-interface WorkerHarness {
-  readonly calls: WorkerCall[]
-  fire(type: string, event: Record<string, unknown>): Promise<void>
+type WorkerClient = Pick<WindowClient, 'url'> & {
+  focus(): Promise<void>
+  postMessage(message: unknown): void
 }
 
-/**
- * Run the shipped worker source against a fake service worker global scope, so a
- * change to what the worker *does* is caught by behaviour rather than by a string
- * that happens to still be in the file.
- */
-function loadWorker(respond: (path: string) => { ok: boolean; status: number }): WorkerHarness {
-  const listeners = new Map<string, (event: never) => void>()
+type DisplayOptions = NotificationOptions & {
+  actions?: Array<{ action: string; title: string }>
+  renotify?: boolean
+}
+
+function browserSubscription(endpoint = 'https://push.example.test/new') {
+  return {
+    endpoint,
+    toJSON: () => ({ endpoint, keys: { p256dh: 'AQID', auth: 'BAUG' } }),
+  }
+}
+
+function loadWorker(respond: (path: string) => number = () => 200, maxActions = 2) {
+  const listeners = new Map<string, (event: Record<string, unknown>) => unknown>()
   const calls: WorkerCall[] = []
-  const pending: Promise<unknown>[] = []
   const scope = {
     location: new URL('https://harness.example/__dsh/web-push/sw.js'),
-    Notification: { maxActions: 2 },
+    Notification: { maxActions },
     registration: {
-      showNotification: async () => {},
+      showNotification: vi.fn(async (_title: string, _options: DisplayOptions) => {}),
       pushManager: {
-        subscribe: async () => ({ endpoint: 'https://push.example.test/subscribed', toJSON: () => ({}) }),
+        subscribe: vi.fn(async (_options: PushSubscriptionOptionsInit) => browserSubscription()),
       },
     },
-    clients: { claim: async () => {}, matchAll: async () => [], openWindow: async () => {} },
-    skipWaiting: async () => {},
-    addEventListener(type: string, listener: (event: never) => void) {
+    clients: {
+      claim: vi.fn(async () => {}),
+      matchAll: vi.fn(async (_options: ClientQueryOptions): Promise<WorkerClient[]> => []),
+      openWindow: vi.fn(async (_url: string) => {}),
+    },
+    skipWaiting: vi.fn(async () => {}),
+    addEventListener(type: string, listener: (event: Record<string, unknown>) => unknown) {
       listeners.set(type, listener)
     },
   }
-  const fetchStub = async (path: string, init?: { body?: string }) => {
+  const fetchStub = async (path: string, init?: RequestInit) => {
     calls.push({
       path,
+      init,
       body: typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : undefined,
     })
-    const answer = respond(path)
-    return { ok: answer.ok, status: answer.status, json: async () => ({ publicKey: 'AQID' }) }
+    return new Response(JSON.stringify({ publicKey: '-_8' }), { status: respond(path) })
   }
   new Function('self', 'fetch', SERVICE_WORKER_SOURCE)(scope, fetchStub)
   return {
+    scope,
     calls,
-    async fire(type, event) {
+    listeners,
+    async fire(type: string, event: Record<string, unknown> = {}) {
       const listener = listeners.get(type)
-      const waited: { waitUntil(value: Promise<unknown>): void } = { waitUntil: (value) => pending.push(value) }
-      listener?.({ ...waited, ...event } as never)
+      if (listener === undefined) throw new Error(`missing worker listener: ${type}`)
+      const pending: Promise<unknown>[] = []
+      await listener({ ...event, waitUntil: (value: Promise<unknown>) => pending.push(value) })
       await Promise.all(pending)
     },
   }
 }
 
-describe('Service Worker source', () => {
-  it('always displays push payloads and handles same-origin clicks without caching the app', () => {
-    expect(SERVICE_WORKER_SOURCE).toContain('showNotification')
-    expect(SERVICE_WORKER_SOURCE).toContain('notificationclick')
-    expect(SERVICE_WORKER_SOURCE).toContain('dsh-web-push/open-session')
-    expect(SERVICE_WORKER_SOURCE).toContain('openWindow')
-    expect(SERVICE_WORKER_SOURCE).not.toContain('caches.open')
-  })
-
-  it('renews a rotated Push subscription without a page in the loop', () => {
-    expect(SERVICE_WORKER_SOURCE).toContain("addEventListener('pushsubscriptionchange'")
-    expect(SERVICE_WORKER_SOURCE).toContain('event.oldSubscription')
-    expect(SERVICE_WORKER_SOURCE).toContain('event.newSubscription')
-    expect(SERVICE_WORKER_SOURCE).toContain('pushManager.subscribe')
-    expect(SERVICE_WORKER_SOURCE).toContain('/__dsh/web-push/subscribe')
-    expect(SERVICE_WORKER_SOURCE).toContain('/__dsh/web-push/unsubscribe')
-    // The replacement is named so the server can carry the device's preferences
-    // across, and no response is trusted before it has been checked.
-    expect(SERVICE_WORKER_SOURCE).toContain('previousEndpoint')
-    expect(SERVICE_WORKER_SOURCE).toContain('response.ok')
-    expect(SERVICE_WORKER_SOURCE).not.toContain('caches.open')
-  })
-
-  it('keeps the old endpoint when the replacement could not be stored', async () => {
-    const worker = loadWorker((path) =>
-      path.endsWith('/subscribe') ? { ok: false, status: 500 } : { ok: true, status: 200 },
-    )
-    await worker.fire('pushsubscriptionchange', {
-      oldSubscription: { endpoint: 'https://push.example.test/old' },
-      newSubscription: {
-        endpoint: 'https://push.example.test/new',
-        toJSON: () => ({ endpoint: 'https://push.example.test/new' }),
+describe('Service Worker behavior', () => {
+  it('displays the payload with artwork served by the registered routes and re-alerts on replacement', async () => {
+    const worker = loadWorker()
+    await worker.fire('push', {
+      data: {
+        json: () => ({ title: 'Done', body: 'The answer.', url: '/session/one', sessionId: 'one', tag: 'turn-one' }),
       },
     })
-    // Retiring the old endpoint here would leave the device with no reachable
-    // subscription at all.
-    expect(worker.calls.map((call) => call.path)).toEqual(['/__dsh/web-push/subscribe'])
+    expect(worker.scope.registration.showNotification).toHaveBeenCalledWith('Done', {
+      body: 'The answer.',
+      data: { url: '/session/one', sessionId: 'one' },
+      icon: new URL(NOTIFICATION_ICON_PATH, worker.scope.location).href,
+      badge: new URL(NOTIFICATION_BADGE_PATH, worker.scope.location).href,
+      tag: 'turn-one',
+      renotify: true,
+      actions: [
+        { action: 'open', title: 'Open' },
+        { action: 'dismiss', title: 'Dismiss' },
+      ],
+    })
   })
 
-  it('names the replaced endpoint, and retires it only after the new one is stored', async () => {
-    const worker = loadWorker(() => ({ ok: true, status: 200 }))
-    await worker.fire('pushsubscriptionchange', {
-      oldSubscription: { endpoint: 'https://push.example.test/old' },
-      newSubscription: {
-        endpoint: 'https://push.example.test/new',
-        toJSON: () => ({
-          endpoint: 'https://push.example.test/new',
-          keys: { p256dh: 'AQID', auth: 'BAUG' },
-        }),
+  it.each([
+    undefined,
+    {
+      json: () => {
+        throw new Error('invalid JSON')
       },
+    },
+    { json: () => null },
+    { json: () => 42 },
+    { json: () => ({ title: '', body: 42, tag: '', url: null, sessionId: false }) },
+  ])('displays fallback text for unusable push data: %j', async (data) => {
+    const worker = loadWorker()
+    await worker.fire('push', { data })
+    const [[title, options]] = worker.scope.registration.showNotification.mock.calls
+    expect(title).toBe('DeepSeek Harness')
+    expect(options.body).toBe('A notification is ready.')
+    expect(options.data).toEqual({ url: '/', sessionId: undefined })
+    expect(options.tag).toBeUndefined()
+    expect(options.renotify).toBeUndefined()
+  })
+
+  it.each([
+    [1, ['open']],
+    [2, ['open', 'dismiss']],
+    [5, ['open', 'dismiss']],
+    [0, ['open', 'dismiss']],
+    [Number.NaN, ['open', 'dismiss']],
+  ])('offers actions within the platform limit of %s', async (limit, expected) => {
+    const worker = loadWorker(undefined, limit)
+    await worker.fire('push')
+    const [[, options]] = worker.scope.registration.showNotification.mock.calls
+    expect(options.actions?.map((action) => action.action)).toEqual(expected)
+  })
+
+  it.each([
+    ['/session/one', 'https://harness.example/session/one'],
+    ['https://harness.example/session/two', 'https://harness.example/session/two'],
+    ['https://other.example/session/one', 'https://harness.example/'],
+    ['http://[invalid', 'https://harness.example/'],
+    [undefined, 'https://harness.example/'],
+  ])('opens a same-origin destination for click data %s', async (url, expected) => {
+    const worker = loadWorker()
+    const close = vi.fn()
+    await worker.fire('notificationclick', { action: 'open', notification: { close, data: { url } } })
+    expect(close).toHaveBeenCalledOnce()
+    expect(worker.scope.clients.matchAll).toHaveBeenCalledWith({ type: 'window', includeUncontrolled: true })
+    expect(worker.scope.clients.openWindow).toHaveBeenCalledWith(expected)
+  })
+
+  it.each(['one', undefined])(
+    'focuses an existing app window and forwards session %s when supplied',
+    async (sessionId) => {
+      const worker = loadWorker()
+      const existing = { url: 'https://harness.example/other', focus: vi.fn(async () => {}), postMessage: vi.fn() }
+      const foreign = { url: 'https://other.example/', focus: vi.fn(async () => {}), postMessage: vi.fn() }
+      worker.scope.clients.matchAll.mockResolvedValue([{ ...foreign, url: 'not a URL' }, foreign, existing])
+      await worker.fire('notificationclick', {
+        notification: { close: vi.fn(), data: { url: '/session/one', sessionId } },
+      })
+      expect(existing.focus).toHaveBeenCalledOnce()
+      expect(foreign.focus).not.toHaveBeenCalled()
+      expect(foreign.postMessage).not.toHaveBeenCalled()
+      if (sessionId === undefined) expect(existing.postMessage).not.toHaveBeenCalled()
+      else expect(existing.postMessage).toHaveBeenCalledWith({ type: 'dsh-web-push/open-session', sessionId })
+      expect(worker.scope.clients.openWindow).not.toHaveBeenCalled()
+    },
+  )
+
+  it('dismisses without opening or focusing an app window', async () => {
+    const worker = loadWorker()
+    const close = vi.fn()
+    await worker.fire('notificationclick', { action: 'dismiss', notification: { close } })
+    expect(close).toHaveBeenCalledOnce()
+    expect(worker.scope.clients.matchAll).not.toHaveBeenCalled()
+    expect(worker.scope.clients.openWindow).not.toHaveBeenCalled()
+  })
+
+  it('takes over on install and activation without intercepting application fetches', async () => {
+    const worker = loadWorker()
+    await worker.fire('install')
+    expect(worker.scope.skipWaiting).toHaveBeenCalledOnce()
+    await worker.fire('activate')
+    expect(worker.scope.clients.claim).toHaveBeenCalledOnce()
+    expect(worker.listeners.has('fetch')).toBe(false)
+  })
+
+  it('renews from config without a page and retires the old endpoint after storing its replacement', async () => {
+    const worker = loadWorker()
+    await worker.fire('pushsubscriptionchange', { oldSubscription: { endpoint: 'https://push.example.test/old' } })
+    expect(worker.calls.map((call) => call.path)).toEqual([
+      '/__dsh/web-push/config',
+      '/__dsh/web-push/subscribe',
+      '/__dsh/web-push/unsubscribe',
+    ])
+    expect(worker.calls[0].init).toEqual({ credentials: 'same-origin' })
+    expect(worker.scope.registration.pushManager.subscribe).toHaveBeenCalledWith({
+      userVisibleOnly: true,
+      applicationServerKey: new Uint8Array([251, 255]),
     })
-    expect(worker.calls.map((call) => call.path)).toEqual(['/__dsh/web-push/subscribe', '/__dsh/web-push/unsubscribe'])
-    // The subscription carries no preferences: those live in localStorage, which
-    // the worker cannot read.
-    expect(worker.calls[0]?.body).toEqual({
-      endpoint: 'https://push.example.test/new',
-      keys: { p256dh: 'AQID', auth: 'BAUG' },
-      previousEndpoint: 'https://push.example.test/old',
+    expect(worker.calls[1]).toMatchObject({
+      init: { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' } },
+      body: { ...browserSubscription().toJSON(), previousEndpoint: 'https://push.example.test/old' },
     })
-    expect(worker.calls[1]?.body).toEqual({ endpoint: 'https://push.example.test/old' })
+    expect(worker.calls[2].body).toEqual({ endpoint: 'https://push.example.test/old' })
   })
 
-  it('ships a large icon and a status-bar badge with every notification', () => {
-    expect(SERVICE_WORKER_SOURCE).toContain("new URL('notification-icon.png', self.location)")
-    expect(SERVICE_WORKER_SOURCE).toContain("new URL('notification-badge.png', self.location)")
-    expect(SERVICE_WORKER_SOURCE).toContain('const options = { body, data, icon, badge }')
+  it.each([
+    ['https://push.example.test/old', ['/__dsh/web-push/subscribe', '/__dsh/web-push/unsubscribe']],
+    ['https://push.example.test/new', ['/__dsh/web-push/subscribe']],
+    [undefined, ['/__dsh/web-push/subscribe']],
+  ])('stores a browser-provided replacement for %s without resubscribing', async (endpoint, expectedPaths) => {
+    const worker = loadWorker()
+    await worker.fire('pushsubscriptionchange', {
+      oldSubscription: endpoint === undefined ? undefined : { endpoint },
+      newSubscription: browserSubscription(),
+    })
+    expect(worker.scope.registration.pushManager.subscribe).not.toHaveBeenCalled()
+    expect(worker.calls.map((call) => call.path)).toEqual(expectedPaths)
+    expect(worker.calls[0].body).toEqual({
+      ...browserSubscription().toJSON(),
+      ...(endpoint === undefined ? {} : { previousEndpoint: endpoint }),
+    })
   })
 
-  it('offers an Open action, and a Dismiss one wherever the platform has room', () => {
-    expect(SERVICE_WORKER_SOURCE).toContain('self.Notification.maxActions')
-    // The browser drops actions past the platform's limit when the notification
-    // is created; it does not reject the call. The cap therefore only decides
-    // whether a second button is worth building.
-    expect(SERVICE_WORKER_SOURCE).toContain('Math.min(reportedActions, 2)')
-    expect(SERVICE_WORKER_SOURCE).toContain("{ action: 'open', title: 'Open' }")
-    expect(SERVICE_WORKER_SOURCE).toContain("{ action: 'dismiss', title: 'Dismiss' }")
-    expect(SERVICE_WORKER_SOURCE).toContain("if (event.action === 'dismiss') return;")
-  })
-
-  it('re-alerts when it replaces a row for the same session', () => {
-    // The tag is stable per session and kind, so the replacement must still ring.
-    expect(SERVICE_WORKER_SOURCE).toContain('options.tag = tag')
-    expect(SERVICE_WORKER_SOURCE).toContain('options.renotify = true')
-  })
-
-  it('takes over the moment a rebuilt worker installs', () => {
-    expect(SERVICE_WORKER_SOURCE).toContain("addEventListener('install'")
-    expect(SERVICE_WORKER_SOURCE).toContain('self.skipWaiting()')
-    expect(SERVICE_WORKER_SOURCE).toContain("addEventListener('activate'")
-    expect(SERVICE_WORKER_SOURCE).toContain('self.clients.claim()')
-  })
+  it.each(['config', 'browser subscription', 'storage'])(
+    'keeps the old endpoint when renewal fails at %s',
+    async (stage) => {
+      const worker = loadWorker((path) =>
+        (stage === 'config' && path.endsWith('/config')) || (stage === 'storage' && path.endsWith('/subscribe'))
+          ? 500
+          : 200,
+      )
+      if (stage === 'browser subscription') {
+        worker.scope.registration.pushManager.subscribe.mockRejectedValue(new Error('subscription failed'))
+      }
+      await worker.fire('pushsubscriptionchange', { oldSubscription: { endpoint: 'https://push.example.test/old' } })
+      expect(worker.calls.map((call) => call.path)).toEqual(
+        stage === 'storage' ? ['/__dsh/web-push/config', '/__dsh/web-push/subscribe'] : ['/__dsh/web-push/config'],
+      )
+    },
+  )
 })

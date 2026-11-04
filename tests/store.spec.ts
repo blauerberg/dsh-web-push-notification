@@ -3,14 +3,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { PushStore } from '../src/store.ts'
+import { subscriptionFixture, vapidKeys as keys } from './fixtures.ts'
 
-const keys = { publicKey: 'AQID', privateKey: 'BAUG' }
-const subscription = {
-  endpoint: 'https://push.example.test/send/one',
-  expirationTime: null,
-  keys: { p256dh: 'AQID', auth: 'BAUG' },
-  preferences: { turnCompleted: true, turnFailed: true, approval: true, question: true, bodyMode: 'full' as const },
-}
+const subscription = subscriptionFixture()
 
 let root: string | undefined
 

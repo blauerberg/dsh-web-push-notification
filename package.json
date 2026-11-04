@@ -69,7 +69,7 @@
     "format": "biome format --write",
     "format:check": "biome ci --linter-enabled=false --assist-enabled=false",
     "lint": "biome lint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
   },

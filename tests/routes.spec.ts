@@ -1,8 +1,7 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PRESENCE_PATH, SETTINGS_PATH } from '../src/contract.ts'
 import { PresenceRegistry } from '../src/presence.ts'
 import {
@@ -14,86 +13,34 @@ import {
   type PushRouteOptions,
 } from '../src/routes.ts'
 import type { PushSender } from '../src/sender.ts'
-import { SERVICE_WORKER_SOURCE } from '../src/service-worker.ts'
 import { PushStore } from '../src/store.ts'
+import { subscriptionFixture, vapidKeys } from './fixtures.ts'
+import { request, response } from './http.ts'
 
-const subscription = {
-  endpoint: 'https://push.example.test/send/one',
-  expirationTime: null,
-  keys: { p256dh: 'AQID', auth: 'BAUG' },
-  preferences: { turnCompleted: true, turnFailed: true, approval: true, question: true, bodyMode: 'full' as const },
-}
+const subscription = subscriptionFixture()
+let root: string
+let store: PushStore
+let presence: PresenceRegistry
 
-let root: string | undefined
-let presence = new PresenceRegistry()
-const authenticated = () => undefined
-
-afterEach(() => {
-  if (root !== undefined) rmSync(root, { recursive: true, force: true })
-  root = undefined
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
+  store = PushStore.open(join(root, 'state.json'), () => vapidKeys)
   presence = new PresenceRegistry()
 })
 
-/** Every route test shares one presence registry, so a report can be observed. */
-function routesFor(options: Omit<PushRouteOptions, 'presence'>): ReturnType<typeof createPushRoutes> {
-  return createPushRoutes({ presence, ...options })
-}
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true })
+})
 
-function request(method: string, body?: unknown, contentType = 'application/json'): IncomingMessage {
-  const raw = body === undefined ? '' : JSON.stringify(body)
-  return {
-    method,
-    headers:
-      raw === ''
-        ? { host: '127.0.0.1' }
-        : { host: '127.0.0.1', 'content-type': contentType, 'content-length': String(Buffer.byteLength(raw)) },
-    async *[Symbol.asyncIterator]() {
-      if (raw !== '') yield Buffer.from(raw)
-    },
-  } as unknown as IncomingMessage
-}
-
-function response(): {
-  response: ServerResponse
-  status: number
-  headers: Record<string, unknown>
-  body: unknown
-  raw: unknown
-} {
-  let status = 0
-  let headers: Record<string, unknown> = {}
-  let body: unknown
-  let raw: unknown
-  const value = {
-    response: {
-      writeHead(code: number, written?: Record<string, unknown>) {
-        status = code
-        headers = written ?? {}
-      },
-      end(value?: unknown) {
-        raw = value
-        const text = value === undefined ? undefined : String(value)
-        try {
-          body = text === undefined ? undefined : JSON.parse(text)
-        } catch {
-          body = text
-        }
-      },
-    } as unknown as ServerResponse,
-    get status() {
-      return status
-    },
-    get headers() {
-      return headers
-    },
-    get body() {
-      return body
-    },
-    get raw() {
-      return raw
-    },
-  }
-  return value
+function routesFor(options: Partial<Omit<PushRouteOptions, 'presence'>> = {}): ReturnType<typeof createPushRoutes> {
+  return createPushRoutes({
+    store,
+    presence,
+    sender: { send: vi.fn(async () => {}) },
+    maxRequestBodyBytes: 1024,
+    requestRejection: () => undefined,
+    ...options,
+  })
 }
 
 function find(path: string, routes: ReturnType<typeof createPushRoutes>) {
@@ -104,10 +51,7 @@ function find(path: string, routes: ReturnType<typeof createPushRoutes>) {
 
 describe('Web Push routes', () => {
   it('serves public configuration and a push-only Service Worker', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const sender: PushSender = { send: vi.fn(async () => {}) }
-    const routes = routesFor({ store, sender, maxRequestBodyBytes: 1024, requestRejection: authenticated })
+    const routes = routesFor()
     const config = response()
     await find(CONFIG_PATH, routes).handler(request('GET'), config.response)
     expect(config.status).toBe(200)
@@ -127,14 +71,12 @@ describe('Web Push routes', () => {
   })
 
   it('stores subscriptions and removes expired endpoints after a 410', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     const sender: PushSender = {
       send: vi.fn(async (value) => {
         if (value.endpoint.endsWith('/one')) throw Object.assign(new Error('gone'), { statusCode: 410 })
       }),
     }
-    const routes = routesFor({ store, sender, maxRequestBodyBytes: 1024, requestRejection: authenticated })
+    const routes = routesFor({ sender })
     const subscribe = response()
     await find('/__dsh/web-push/subscribe', routes).handler(request('POST', subscription), subscribe.response)
     expect(subscribe.status).toBe(200)
@@ -147,11 +89,8 @@ describe('Web Push routes', () => {
   })
 
   it('drops a subscription the Push service refuses this deployment\u2019s key pair for', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     store.upsert(subscription)
     const routes = routesFor({
-      store,
       sender: {
         send: vi.fn(async () => {
           // What FCM answers a record that was registered under another VAPID
@@ -163,8 +102,6 @@ describe('Web Push routes', () => {
           })
         }),
       },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
     })
     const test = response()
     await find('/__dsh/web-push/test', routes).handler(request('POST', {}), test.response)
@@ -177,18 +114,13 @@ describe('Web Push routes', () => {
     // Only the service's own statement that the credentials do not match is
     // permanent. An unrelated 403 must not throw away a record that a later
     // event can still reach.
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     store.upsert(subscription)
     const routes = routesFor({
-      store,
       sender: {
         send: vi.fn(async () => {
           throw Object.assign(new Error('forbidden'), { statusCode: 403, body: 'sender is not authorized' })
         }),
       },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
     })
     const test = response()
     await find('/__dsh/web-push/test', routes).handler(request('POST', {}), test.response)
@@ -197,14 +129,7 @@ describe('Web Push routes', () => {
   })
 
   it('carries a rotated subscription\u2019s preferences over from the endpoint it replaces', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const routes = routesFor({
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
-    })
+    const routes = routesFor()
     const chosen = {
       turnCompleted: false,
       turnFailed: true,
@@ -254,18 +179,13 @@ describe('Web Push routes', () => {
   })
 
   it('keeps a failed delivery from rejecting the test route', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     store.upsert(subscription)
     const routes = routesFor({
-      store,
       sender: {
         send: vi.fn(async () => {
           throw new Error('network down')
         }),
       },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
     })
     const test = response()
     await find('/__dsh/web-push/test', routes).handler(request('POST', {}), test.response)
@@ -275,14 +195,7 @@ describe('Web Push routes', () => {
   })
 
   it('reports malformed client input without presenting a server failure', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const routes = routesFor({
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
-    })
+    const routes = routesFor()
 
     const invalidSubscription = response()
     await find('/__dsh/web-push/subscribe', routes).handler(
@@ -303,12 +216,7 @@ describe('Web Push routes', () => {
   })
 
   it('rejects requests that are not authenticated by the Harness connection', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     const routes = routesFor({
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
       requestRejection: () => 401,
     })
     const result = response()
@@ -318,15 +226,10 @@ describe('Web Push routes', () => {
   })
 
   it('sends the fixed test copy and checks the current device registration', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-routes-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     store.upsert(subscription)
     const sent: string[] = []
     const routes = routesFor({
-      store,
       sender: { send: async (_subscription, payload) => void sent.push(String(payload)) },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
     })
 
     const test = response()
@@ -343,12 +246,7 @@ describe('Web Push routes', () => {
   })
 
   it('serves the notification artwork even when no session is presented', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-icons-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
     const routes = routesFor({
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
       // The browser fetches a notification's icon itself, with no app cookie.
       requestRejection: () => 401,
     })
@@ -363,28 +261,8 @@ describe('Web Push routes', () => {
     }
   })
 
-  it('resolves the artwork the worker asks for to the route that serves it', () => {
-    // The worker names the artwork relative to itself. A route registered at any
-    // other path would 404, and Chrome would draw the origin's grey monogram
-    // disc in the large-icon slot instead of the whale.
-    const named = ['notification-icon.png', 'notification-badge.png'].filter((fileName) =>
-      SERVICE_WORKER_SOURCE.includes(`new URL('${fileName}', self.location)`),
-    )
-    expect(named).toEqual(['notification-icon.png', 'notification-badge.png'])
-    const worker = new URL(SERVICE_WORKER_PATH, 'https://example.test')
-    expect(new URL('notification-icon.png', worker).pathname).toBe(NOTIFICATION_ICON_PATH)
-    expect(new URL('notification-badge.png', worker).pathname).toBe(NOTIFICATION_BADGE_PATH)
-  })
-
   it('records a page that is in front of the user', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-presence-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const routes = routesFor({
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
-    })
+    const routes = routesFor()
 
     const accepted = response()
     await find(PRESENCE_PATH, routes).handler(request('POST', { id: 'page-1', active: true }), accepted.response)
@@ -405,28 +283,19 @@ describe('Web Push routes', () => {
   })
 
   it('serves presence only over an authenticated POST carrying JSON', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-presence-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const dependencies = {
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
-    }
-
     const wrongMethod = response()
-    await find(PRESENCE_PATH, routesFor(dependencies)).handler(request('GET'), wrongMethod.response)
+    await find(PRESENCE_PATH, routesFor()).handler(request('GET'), wrongMethod.response)
     expect(wrongMethod.status).toBe(405)
 
     const wrongType = response()
-    await find(PRESENCE_PATH, routesFor(dependencies)).handler(
+    await find(PRESENCE_PATH, routesFor()).handler(
       request('POST', { id: 'page-1', active: true }, 'application/jsonp'),
       wrongType.response,
     )
     expect(wrongType.status).toBe(415)
 
     const unauthenticated = response()
-    const gated = createPushRoutes({ ...dependencies, presence, requestRejection: () => 401 })
+    const gated = routesFor({ requestRejection: () => 401 })
     await find(PRESENCE_PATH, gated).handler(request('POST', { id: 'page-1', active: true }), unauthenticated.response)
     expect(unauthenticated.status).toBe(401)
     expect(unauthenticated.body).toBe('unauthorized')
@@ -434,14 +303,7 @@ describe('Web Push routes', () => {
   })
 
   it('stores the suppression policy and hands it back to every open page', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-settings-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const routes = routesFor({
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
-    })
+    const routes = routesFor()
 
     const saved = response()
     await find(SETTINGS_PATH, routes).handler(
@@ -460,17 +322,7 @@ describe('Web Push routes', () => {
   })
 
   it('refuses a suppression policy it cannot honour', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-settings-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const route = find(
-      SETTINGS_PATH,
-      routesFor({
-        store,
-        sender: { send: vi.fn(async () => {}) },
-        maxRequestBodyBytes: 1024,
-        requestRejection: authenticated,
-      }),
-    )
+    const route = find(SETTINGS_PATH, routesFor())
 
     const bodies: unknown[] = [
       {},
@@ -490,21 +342,12 @@ describe('Web Push routes', () => {
   })
 
   it('serves settings only over an authenticated POST carrying JSON', async () => {
-    root = mkdtempSync(join(tmpdir(), 'dsh-web-push-settings-'))
-    const store = PushStore.open(join(root, 'state.json'), () => ({ publicKey: 'AQID', privateKey: 'BAUG' }))
-    const dependencies = {
-      store,
-      sender: { send: vi.fn(async () => {}) },
-      maxRequestBodyBytes: 1024,
-      requestRejection: authenticated,
-    }
-
     const wrongMethod = response()
-    await find(SETTINGS_PATH, routesFor(dependencies)).handler(request('GET'), wrongMethod.response)
+    await find(SETTINGS_PATH, routesFor()).handler(request('GET'), wrongMethod.response)
     expect(wrongMethod.status).toBe(405)
 
     const unauthenticated = response()
-    await find(SETTINGS_PATH, createPushRoutes({ ...dependencies, presence, requestRejection: () => 401 })).handler(
+    await find(SETTINGS_PATH, routesFor({ requestRejection: () => 401 })).handler(
       request('POST', { suppressWhileActive: false, idleMinutes: 5 }),
       unauthenticated.response,
     )
