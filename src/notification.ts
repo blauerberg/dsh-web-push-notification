@@ -77,32 +77,43 @@ export function sessionTitleOf(events: readonly SessionEvent[]): string | undefi
   return undefined
 }
 
+export function notificationKindForEvent(event: SessionEvent): NotificationKind | undefined {
+  switch (event.type) {
+    case 'turn/end':
+      return event.data.reason.kind === 'completed' ? 'turnCompleted' : 'turnFailed'
+    case 'tool/call':
+      return event.data.name === 'ask_user_question' ? 'question' : undefined
+    default:
+      return (event.type as string) === 'approval/asked' ? 'approval' : undefined
+  }
+}
+
 export function notificationForEvent(
   sessionId: string,
   event: SessionEvent,
   options: NotificationOptions = {},
 ): NotificationMessage | undefined {
+  const kind = notificationKindForEvent(event)
+  if (kind === undefined) return undefined
   const bodyMode = options.bodyMode ?? 'full'
   const events = options.events ?? []
   const sessionTitle = options.sessionTitle?.trim()
-  const titled = (kind: NotificationKind): string => titleFor(kind, sessionTitle === '' ? undefined : sessionTitle)
+  const title = titleFor(kind, sessionTitle === '' ? undefined : sessionTitle)
   switch (event.type) {
     case 'turn/end': {
-      const kind = event.data.reason.kind === 'completed' ? 'turnCompleted' : 'turnFailed'
       const summary = `Turn ${String(event.data.turn)} ${kind === 'turnCompleted' ? 'completed.' : `${event.data.reason.kind}.`}`
       const body = bodyMode === 'full' ? fullTurnBody(event, events, summary) : summary
-      return message(sessionId, kind, titled(kind), body)
+      return message(sessionId, kind, title, body)
     }
     case 'tool/call':
-      if (event.data.name !== 'ask_user_question') return undefined
       return message(
         sessionId,
-        'question',
-        titled('question'),
+        kind,
+        title,
         bodyMode === 'full' ? questionBody(event.data.arguments) : 'A response is required to continue the turn.',
       )
     default:
-      return approvalMessage(sessionId, event, bodyMode, titled('approval'))
+      return approvalMessage(sessionId, event, bodyMode, title)
   }
 }
 
@@ -130,8 +141,7 @@ function approvalMessage(
   event: SessionEvent,
   bodyMode: NotificationBodyMode,
   title: string,
-): NotificationMessage | undefined {
-  if ((event.type as string) !== 'approval/asked') return undefined
+): NotificationMessage {
   const data = event.data as unknown as { readonly toolName: string; readonly reason?: string }
   const summary = `Approval is required for ${data.toolName}.`
   const body = bodyMode === 'full' && typeof data.reason === 'string' && data.reason !== '' ? data.reason : summary

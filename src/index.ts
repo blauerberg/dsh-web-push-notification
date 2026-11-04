@@ -8,7 +8,12 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { deliver, type DeliveryFailure } from './delivery.ts'
-import { notificationForEvent, sessionTitleOf } from './notification.ts'
+import {
+  notificationForEvent,
+  notificationKindForEvent,
+  sessionTitleOf,
+  type NotificationMessage,
+} from './notification.ts'
 import { PresenceRegistry } from './presence.ts'
 import { createPushRoutes } from './routes.ts'
 import { createWebPushSender, generateVapidKeys } from './sender.ts'
@@ -175,6 +180,7 @@ export function apply(ctx: Context, config?: Config): void {
   }, 'dsh-web-push-notification: routes')
   ctx.effect(() => {
     const dispose = ctx.on('session/event', (session: Session, event: SessionEvent) => {
+      if (notificationKindForEvent(event) === undefined) return
       // A page already in front of the user shows this change, so ringing every
       // other device about it is noise. Both halves are the user's choice in
       // Settings: they can drop the quiet period, or shorten how long an
@@ -184,8 +190,10 @@ export function apply(ctx: Context, config?: Config): void {
       if (store.settings.suppressWhileActive && presence.anyActive()) return
       const events = session.snapshotEvents()
       const sessionTitle = sessionTitleOf(events)
-      const summary = notificationForEvent(String(session.id), event, { bodyMode: 'summary', events, sessionTitle })
+      const sessionId = String(session.id)
+      const summary = notificationForEvent(sessionId, event, { bodyMode: 'summary', events, sessionTitle })
       if (summary === undefined) return
+      let full: NotificationMessage | undefined
       // A dispatched subagent runs in a session of its own, so its turn would
       // ring a second time for work the session that dispatched it reports when
       // that session finishes. Each device chooses whether it still wants it.
@@ -194,12 +202,11 @@ export function apply(ctx: Context, config?: Config): void {
         kind: summary.kind,
         wants: runsItself ? (subscription) => subscription.preferences.subagentRuns : undefined,
         onFailure: onDeliveryFailure,
-        payloadFor: (subscription) =>
-          notificationForEvent(String(session.id), event, {
-            bodyMode: subscription.preferences.bodyMode,
-            events,
-            sessionTitle,
-          }) ?? summary,
+        payloadFor: (subscription) => {
+          if (subscription.preferences.bodyMode === 'summary') return summary
+          full ??= notificationForEvent(sessionId, event, { bodyMode: 'full', events, sessionTitle }) ?? summary
+          return full
+        },
       }).catch((error) => {
         ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
       })

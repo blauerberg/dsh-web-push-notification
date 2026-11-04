@@ -88,6 +88,67 @@ function completedTurn(text = 'The answer.', origin?: 'subagent') {
 }
 
 describe('host plugin registration', () => {
+  it('ignores non-notifying events without reading the session history', () => {
+    const { ctx } = createContext()
+    apply(ctx, { storagePath: join(root, 'state.json') })
+    const { session } = completedTurn()
+    const assistant = session.snapshotEvents()[0]
+    const start = session.append('turn/start', { turn: 2 })
+    const tool = session.append('tool/call', {
+      turn: 2,
+      step: 1,
+      callId: 'ordinary-call' as SessionEvent<'tool/call'>['data']['callId'],
+      name: 'bash',
+      arguments: '{}',
+    })
+    const snapshot = vi.spyOn(session, 'snapshotEvents')
+
+    for (const event of [assistant, start, tool]) ctx.emit('session/event', session, event)
+
+    expect(snapshot).not.toHaveBeenCalled()
+    expect(webPush.sendNotification).not.toHaveBeenCalled()
+  })
+
+  it.each(['summary', 'full'] as const)('reads full content only once when delivering %s bodies', async (bodyMode) => {
+    const storagePath = join(root, 'state.json')
+    const store = PushStore.open(storagePath, () => vapidKeys)
+    for (let device = 0; device < 3; device++) {
+      store.upsert(subscriptionFixture(`https://push.example.test/device-${String(device)}`, { bodyMode }))
+    }
+    const { ctx } = createContext()
+    apply(ctx, { storagePath })
+    const { session, end } = completedTurn()
+    const assistant = session.snapshotEvents()[0]
+    if (assistant.type !== 'assistant/message') throw new Error('missing assistant fixture')
+    const content = vi.fn(() => assistant.data.message.content)
+    const observed = {
+      ...assistant,
+      data: {
+        ...assistant.data,
+        message: {
+          ...assistant.data.message,
+          get content() {
+            return content()
+          },
+        },
+      },
+    }
+    const snapshot = vi.spyOn(session, 'snapshotEvents').mockReturnValue([observed, end])
+
+    ctx.emit('session/event', session, end)
+    await vi.waitFor(() => expect(webPush.sendNotification).toHaveBeenCalledTimes(3))
+
+    expect(snapshot).toHaveBeenCalledOnce()
+    expect(content).toHaveBeenCalledTimes(bodyMode === 'full' ? 1 : 0)
+    const bodies = () => webPush.sendNotification.mock.calls.map(([, payload]) => JSON.parse(String(payload)).body)
+    expect(bodies()).toEqual(Array(3).fill(bodyMode === 'full' ? 'The answer.' : 'Turn 1 completed.'))
+
+    const next = completedTurn('A new answer.')
+    ctx.emit('session/event', next.session, next.end)
+    await vi.waitFor(() => expect(webPush.sendNotification).toHaveBeenCalledTimes(6))
+    expect(bodies().slice(3)).toEqual(Array(3).fill(bodyMode === 'full' ? 'A new answer.' : 'Turn 1 completed.'))
+  })
+
   it('registers every route and returns their disposers through the effect', async () => {
     const { ctx, routes } = createContext()
     apply(ctx, {
