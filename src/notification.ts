@@ -247,9 +247,9 @@ export function prettify(value: string): string {
       .replace(/\r\n?/g, '\n')
       // Fences mark where code starts and ends; the code itself is worth keeping.
       .replace(/^[ \t]*(?:```|~~~)[^\n]*$/gm, '')
-      .replace(/!\[([^\[\]]*)\]\([^()]*\)/g, '$1')
-      .replace(/\[([^\[\]]*)\]\([^()]*\)/g, '$1')
-      .replace(/\[([^\[\]]*)\]\[[^\[\]]*\]/g, '$1')
+      .replace(/!\[([^[\]]*)\]\([^()]*\)/g, '$1')
+      .replace(/\[([^[\]]*)\]\([^()]*\)/g, '$1')
+      .replace(/\[([^[\]]*)\]\[[^[\]]*\]/g, '$1')
       .replace(/<((?:https?|mailto):[^>\s]+)>/g, '$1')
       .replace(/`([^`\n]*)`/g, '$1')
       .replace(/\*\*(\S(?:[^*\n]*\S)?)\*\*/g, '$1')
@@ -273,7 +273,7 @@ export function prettify(value: string): string {
       )
       // A line of nothing but dots is filler, not content.
       .replace(/^[ \t]*\.{3,}[ \t]*$/gm, '')
-      .replace(/\\([\\`*_{}\[\]()#+\-.!>~])/g, '$1')
+      .replace(/\\([\\`*_{}[\]()#+\-.!>~])/g, '$1')
       .replace(/[ \t]+$/gm, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim()
