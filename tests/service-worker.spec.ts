@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { NOTIFICATION_BADGE_PATH, NOTIFICATION_ICON_PATH } from '../src/routes.ts'
-import { SERVICE_WORKER_SOURCE } from '../src/service-worker.ts'
+
+const source = readFileSync(new URL('../lib/service-worker.js', import.meta.url), 'utf8')
 
 interface WorkerCall {
   readonly path: string
@@ -55,7 +57,7 @@ function loadWorker(respond: (path: string) => number = () => 200, maxActions = 
     })
     return new Response(JSON.stringify({ publicKey: '-_8' }), { status: respond(path) })
   }
-  new Function('self', 'fetch', SERVICE_WORKER_SOURCE)(scope, fetchStub)
+  new Function('self', 'fetch', source)(scope, fetchStub)
   return {
     scope,
     calls,

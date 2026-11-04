@@ -1,6 +1,6 @@
 import { act, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, expect, it, vi } from 'vitest'
-import { applicationServerKey } from '../src/client/api.ts'
+import { applicationServerKey } from '../src/application-server-key.ts'
 import { DEFAULT_NOTIFICATION_PREFERENCES } from '../src/types.ts'
 import { subscriptionFixture } from './fixtures.ts'
 import { checkbox, renderSettings } from './client.ts'

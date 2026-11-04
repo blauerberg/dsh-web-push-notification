@@ -22,20 +22,6 @@ import { validateStoreState } from './validation.ts'
 /** Generate a new VAPID key pair. Kept as a parameter so storage tests are deterministic. */
 export type VapidKeyFactory = () => VapidKeys
 
-/**
- * A predecessor file to inherit from.
- *
- * `adoptSubscriptions` says whether the subscription list in that file belongs to
- * this profile. A file every profile used to write to names devices this profile
- * may not serve, so only its VAPID key pair is inherited: the pair is the
- * deployment's push identity, and every subscription a browser still holds is
- * bound to the pair that created it.
- */
-export interface LegacyStore {
-  readonly path: string
-  readonly adoptSubscriptions: boolean
-}
-
 export class PushStore {
   private readonly subscriptionsByEndpoint: Map<string, PushSubscriptionRecord>
 
@@ -46,25 +32,15 @@ export class PushStore {
     private readonly vapid: VapidKeys,
     subscriptions: readonly PushSubscriptionRecord[],
     suppression: SuppressionSettings,
-    private readonly adoptedFrom: string | undefined = undefined,
   ) {
     this.subscriptionsByEndpoint = new Map(subscriptions.map((subscription) => [subscription.endpoint, subscription]))
     this.suppression = { ...suppression }
   }
 
-  /**
-   * Open the store at `path`, creating it when nothing is there yet.
-   *
-   * `legacyStores` are ordered newest first. A readable profile-owned store supplies
-   * its keys, subscriptions, and settings. Shared state supplies only its keys when
-   * no profile-owned store can be read.
-   */
-  static open(path: string, generateVapidKeys: VapidKeyFactory, legacyStores: readonly LegacyStore[] = []): PushStore {
+  static open(path: string, generateVapidKeys: VapidKeyFactory): PushStore {
     const parent = dirname(path)
     mkdirSync(parent, { recursive: true, mode: 0o700 })
     if (!existsSync(path)) {
-      const adopted = PushStore.adopt(path, legacyStores)
-      if (adopted !== undefined) return adopted
       const vapid = generateVapidKeys()
       const store = new PushStore(path, vapid, [], { ...DEFAULT_SUPPRESSION_SETTINGS })
       store.persist()
@@ -75,51 +51,6 @@ export class PushStore {
     const state = validateStoreState(parsed)
     chmodSync(path, 0o600)
     return new PushStore(path, state.vapid, state.subscriptions, state.settings)
-  }
-
-  /**
-   * Persist the newest readable profile-owned predecessor, falling back to shared keys.
-   * Originals remain available for manual recovery.
-   */
-  private static adopt(path: string, legacyStores: readonly LegacyStore[]): PushStore | undefined {
-    let adopted: { legacy: LegacyStore; state: PushStoreState } | undefined
-    for (const legacy of legacyStores) {
-      const state = PushStore.readState(legacy.path)
-      if (state === undefined) continue
-      if (legacy.adoptSubscriptions) {
-        adopted = { legacy, state }
-        break
-      }
-      adopted ??= { legacy, state }
-    }
-    if (adopted === undefined) return undefined
-    const { legacy, state } = adopted
-    const store = new PushStore(
-      path,
-      state.vapid,
-      legacy.adoptSubscriptions ? state.subscriptions : [],
-      legacy.adoptSubscriptions ? state.settings : { ...DEFAULT_SUPPRESSION_SETTINGS },
-      legacy.path,
-    )
-    store.persist()
-    return store
-  }
-
-  /** A predecessor's state, or undefined when the file is missing or unreadable. */
-  private static readState(path: string): PushStoreState | undefined {
-    if (!existsSync(path)) return undefined
-    try {
-      assertRegularFile(path)
-      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-      return validateStoreState(parsed)
-    } catch {
-      return undefined
-    }
-  }
-
-  /** Where the state was read from, when this store adopted a predecessor's file. */
-  get migratedFrom(): string | undefined {
-    return this.adoptedFrom
   }
 
   /** The preferences a device already chose, for a renewal that carries none. */

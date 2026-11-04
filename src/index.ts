@@ -1,6 +1,4 @@
-import { readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
@@ -17,7 +15,7 @@ import {
 import { PresenceRegistry } from './presence.ts'
 import { createPushRoutes } from './routes.ts'
 import { createWebPushSender, generateVapidKeys } from './sender.ts'
-import { PushStore, type LegacyStore } from './store.ts'
+import { PushStore } from './store.ts'
 
 export const name = 'dsh-web-push-notification'
 
@@ -63,15 +61,7 @@ interface ProfileService {
   readonly dir?: string
 }
 
-/**
- * State lives in the current profile's directory, and never somewhere shared.
- *
- * Every profile under one Harness home used to resolve to the same file, so a
- * second profile pushed its sessions to the first profile's browser and the two
- * overwrote each other's subscription list on every write. Outside a profile —
- * a custom composition, a test — there is nothing to be per-profile about, so
- * the old location stays as the fallback.
- */
+/** Separate profile state prevents one profile from notifying another's devices. */
 export function defaultStoragePath(ctx: Context): string {
   const dir = profileDirectory(ctx)
   return dir === undefined ? dshHomePath('web-push', 'state.json') : join(dir, 'web-push', 'state.json')
@@ -83,65 +73,11 @@ function profileDirectory(ctx: Context): string | undefined {
   return typeof profile?.dir === 'string' && profile.dir !== '' ? profile.dir : undefined
 }
 
-/**
- * Legacy state locations ordered newest first. Profile-owned files retain their
- * keys and subscriptions. The Harness-home file supplies only fallback keys because
- * its devices cannot be attributed to a profile.
- */
-export function legacyStoragePaths(ctx: Context): LegacyStore[] {
-  const candidates: LegacyStore[] = []
-  if (ctx.baseUrl !== undefined) {
-    candidates.push({ path: fileURLToPath(new URL('web-push.json', ctx.baseUrl)), adoptSubscriptions: true })
-  }
-  const dir = profileDirectory(ctx)
-  if (dir !== undefined) {
-    const nodeModules = join(dir, 'node_modules')
-    candidates.push({ path: join(nodeModules, 'dsh-web-push-notification', 'web-push.json'), adoptSubscriptions: true })
-    const store = join(nodeModules, '.pnpm')
-    for (const entry of storeEntries(store)) {
-      candidates.push({
-        path: join(store, entry, 'node_modules', 'dsh-web-push-notification', 'web-push.json'),
-        adoptSubscriptions: true,
-      })
-    }
-  }
-  candidates.push({ path: dshHomePath('web-push', 'state.json'), adoptSubscriptions: false })
-  return candidates.sort((left, right) => modifiedAt(right.path) - modifiedAt(left.path))
-}
-
-/** Version directories a pnpm store keeps for this plugin. */
-function storeEntries(store: string): string[] {
-  try {
-    return readdirSync(store, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith('dsh-web-push-notification@'))
-      .map((entry) => entry.name)
-  } catch {
-    return []
-  }
-}
-
-function modifiedAt(path: string): number {
-  try {
-    return statSync(path).mtimeMs
-  } catch {
-    return 0
-  }
-}
-
 export function apply(ctx: Context, config?: Config): void {
   const subject = config?.vapidSubject ?? DEFAULT_VAPID_SUBJECT
   const storagePath = config?.storagePath ?? defaultStoragePath(ctx)
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
-  // An explicit storagePath is a deliberate deployment choice; only the default
-  // location needs to look for the state a previous version left behind.
-  const store = PushStore.open(
-    storagePath,
-    generateVapidKeys,
-    config?.storagePath === undefined ? legacyStoragePaths(ctx) : [],
-  )
-  if (store.migratedFrom !== undefined) {
-    ctx.logger.info(`dsh-web-push-notification: adopted push state from ${store.migratedFrom}`)
-  }
+  const store = PushStore.open(storagePath, generateVapidKeys)
   const presence = new PresenceRegistry()
   const sender = createWebPushSender(subject, {
     publicKey: store.publicKey,

@@ -1,3 +1,4 @@
+import { applicationServerKey } from '../application-server-key.ts'
 import { WEB_PUSH_ROUTE_PREFIX, type PushSubscriptionJson, type WebPushConfig } from '../contract.ts'
 import type { NotificationPreferences, SuppressionSettings } from '../types.ts'
 
@@ -129,15 +130,6 @@ export function sendTest(message: TestNotificationRequest = {}): Promise<{
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(message),
   })
-}
-
-export function applicationServerKey(value: string): Uint8Array<ArrayBuffer> {
-  const normalized = value.replaceAll('-', '+').replaceAll('_', '/')
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
-  const binary = atob(padded)
-  const result = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index++) result[index] = binary.charCodeAt(index)
-  return result
 }
 
 export function subscriptionUsesApplicationServerKey(subscription: PushSubscription, value: string): boolean {

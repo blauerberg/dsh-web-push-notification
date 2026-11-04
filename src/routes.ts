@@ -13,7 +13,6 @@ import { deliver, type DeliveryFailure } from './delivery.ts'
 import { HttpError, readJson, sendJson, sendText } from './http.ts'
 import type { PresenceRegistry } from './presence.ts'
 import type { PushSender } from './sender.ts'
-import { SERVICE_WORKER_SOURCE } from './service-worker.ts'
 import type { PushStore } from './store.ts'
 import {
   declaresPreferences,
@@ -87,7 +86,8 @@ export function createPushRoutes(options: PushRouteOptions): WebRoute[] {
       kind: 'exact',
       path: SERVICE_WORKER_PATH,
       handler: method('GET', async (_req, res) => {
-        sendText(res, 200, SERVICE_WORKER_SOURCE, 'text/javascript; charset=utf-8')
+        const source = readFileSync(new URL('../lib/service-worker.js', import.meta.url), 'utf8')
+        sendText(res, 200, source, 'text/javascript; charset=utf-8')
       }),
     },
     {

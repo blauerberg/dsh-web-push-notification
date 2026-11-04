@@ -11,8 +11,47 @@ permissions:
 
 jobs:
   checks:
-    uses: ./.github/workflows/checks.yml
-    with:
-      ref: ${{ github.sha }}
-    permissions:
-      contents: read
+    name: Checks (${{ matrix.dsh }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dsh: [locked, latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install plugin dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install latest DeepSeek Harness packages
+        if: matrix.dsh == 'latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tags="$(gh api --paginate 'repos/deepseek-ai/deepseek-harness/releases?per_page=100' --jq '.[] | select(.draft == false) | .tag_name')"
+          ref="$(printf '%s\n' "$tags" | sed -nE '/^dsh-v[0-9]+\.[0-9]+\.[0-9]+$/p' | sort -V | tail -n 1)"
+          if [ -z "$ref" ]; then
+            ref="$(printf '%s\n' "$tags" | sed -nE '/^dsh-v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$/p' | sort -V | tail -n 1)"
+          fi
+          test -n "$ref"
+          node .github/set-dsh-version.mjs "$ref"
+          pnpm install --no-frozen-lockfile
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Run repository checks
+        run: pnpm run check
+
+      - name: Check package contents
+        if: matrix.dsh == 'locked'
+        run: npm pack --dry-run

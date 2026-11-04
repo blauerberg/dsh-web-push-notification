@@ -8,6 +8,16 @@ const dshExternal = ['@deepseek-ai/cordis', '@deepseek-ai/dsh-*']
 await rm('lib', { recursive: true, force: true })
 
 await build({
+  entryPoints: ['src/service-worker.ts'],
+  outfile: 'lib/service-worker.js',
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: ['es2022'],
+  logLevel: 'info',
+})
+
+await build({
   entryPoints: ['src/index.ts'],
   outfile: 'lib/index.js',
   bundle: true,
@@ -16,18 +26,6 @@ await build({
   target: ['node22'],
   sourcemap: true,
   external: [...dshExternal, 'web-push'],
-  logLevel: 'info',
-})
-
-await build({
-  entryPoints: ['src/invariant.ts'],
-  outfile: 'lib/invariant.js',
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  target: ['node22'],
-  sourcemap: true,
-  external: dshExternal,
   logLevel: 'info',
 })
 

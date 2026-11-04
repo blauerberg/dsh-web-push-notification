@@ -1,15 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { Context } from '@deepseek-ai/cordis'
+import { join } from 'node:path'
 import { act, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, expect, it, vi } from 'vitest'
-import { legacyStoragePaths } from '../src/index.ts'
 import { PushStore } from '../src/store.ts'
 import { createPushRoutes } from '../src/routes.ts'
 import { PresenceRegistry } from '../src/presence.ts'
-import { applicationServerKey } from '../src/client/api.ts'
+import { applicationServerKey } from '../src/application-server-key.ts'
 import { checkbox, renderSettings } from './client.ts'
 import { subscriptionFixture, vapidKeys } from './fixtures.ts'
 import { request, response } from './http.ts'
@@ -22,44 +19,15 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
 
 let root: string | undefined
 let panel: ReactTestRenderer | undefined
-const previousHome = process.env.DSH_HOME
 afterEach(() => {
   act(() => panel?.unmount())
   panel = undefined
   if (root !== undefined) rmSync(root, { recursive: true, force: true })
   root = undefined
-  if (previousHome === undefined) delete process.env.DSH_HOME
-  else process.env.DSH_HOME = previousHome
   vi.unstubAllGlobals()
 })
 
 const subscription = subscriptionFixture('https://push.example.test/review-device', { bodyMode: 'summary' })
-
-it('preserves the profile-owned keys and device when a newer shared file has unrelated keys', () => {
-  root = mkdtempSync(join(tmpdir(), 'push-migration-review-'))
-  process.env.DSH_HOME = join(root, 'home')
-  const profile = join(root, 'home', 'profiles', 'web')
-  const owned = join(profile, 'web-push.json')
-  const shared = join(root, 'home', 'web-push', 'state.json')
-  const ownedKeys = { publicKey: 'AQID', privateKey: 'BAUG' }
-  const sharedKeys = { publicKey: 'BwgJ', privateKey: 'CgsM' }
-  for (const [path, keys, devices] of [
-    [owned, ownedKeys, [subscription]],
-    [shared, sharedKeys, []],
-  ] as const) {
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify({ version: 1, vapid: keys, subscriptions: devices }))
-  }
-  utimesSync(owned, 1, 1)
-  utimesSync(shared, 2, 2)
-  const ctx = new Context().extend({ baseUrl: `${pathToFileURL(profile).href}/` })
-  ctx.provide('profileContext', { dir: profile })
-  const store = PushStore.open(join(profile, 'web-push', 'state.json'), () => ownedKeys, legacyStoragePaths(ctx))
-  expect({ publicKey: store.publicKey, endpoints: store.list().map((item) => item.endpoint) }).toEqual({
-    publicKey: ownedKeys.publicKey,
-    endpoints: [subscription.endpoint],
-  })
-})
 
 it.each([false, true])(
   'keeps the current device registration accurate after Send test (current expired: %s)',

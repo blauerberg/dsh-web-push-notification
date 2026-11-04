@@ -199,12 +199,10 @@ describe('host plugin registration', () => {
     }
   })
 
-  it('inherits the key pair a deployment kept at the Harness home before it ran in a profile', () => {
+  it('creates independent profile state when the Harness home already has a store', () => {
     const previousHome = process.env.DSH_HOME
     process.env.DSH_HOME = join(root, 'home')
     try {
-      // What a run outside any profile left behind: the deployment's push
-      // identity, plus a device that may belong to another profile.
       const shared = join(root, 'home', 'web-push')
       mkdirSync(shared, { recursive: true })
       writeFileSync(
@@ -232,12 +230,8 @@ describe('host plugin registration', () => {
         vapid: { publicKey: string }
         subscriptions: unknown[]
       }
-      // A browser subscription is bound to the pair that created it, so a move to
-      // the per-profile path carries the pair along instead of minting a second
-      // one and orphaning every device the deployment had.
-      expect(persisted.vapid.publicKey).toBe('SHAREDKEY')
-      expect(webPush.generateVAPIDKeys).not.toHaveBeenCalled()
-      // The device list stays behind: every profile used to write to that file.
+      expect(persisted.vapid.publicKey).toBe('AQID')
+      expect(webPush.generateVAPIDKeys).toHaveBeenCalledOnce()
       expect(persisted.subscriptions).toEqual([])
     } finally {
       if (previousHome === undefined) delete process.env.DSH_HOME
@@ -373,35 +367,16 @@ describe('host plugin registration', () => {
     })
   })
 
-  it('falls back to the Harness home outside a profile, and adopts the legacy file it finds', () => {
-    const packageBase = mkdtempSync(join(tmpdir(), 'dsh-web-push-pkg-'))
+  it('uses the Harness home outside a profile', () => {
     const previousHome = process.env.DSH_HOME
     process.env.DSH_HOME = root
     try {
-      // What 0.1.1 kept beside its bundle.
-      const legacyPath = join(packageBase, 'web-push.json')
-      writeFileSync(
-        legacyPath,
-        JSON.stringify({ version: 1, vapid: { publicKey: 'LEGACYKEY', privateKey: 'BAUG' }, subscriptions: [] }),
-      )
-      const { ctx } = createContext(packageBase)
-      apply(ctx, {
-        vapidSubject: 'mailto:test@example.invalid',
-        maxRequestBodyBytes: 1024,
-      })
-      // No profile service means no per-profile location, so the shared path
-      // under the Harness home stays as the fallback.
-      const statePath = join(root, 'web-push', 'state.json')
-      expect(existsSync(statePath)).toBe(true)
-      const persisted = JSON.parse(readFileSync(statePath, 'utf8')) as { vapid: { publicKey: string } }
-      // The key the browser's subscription was minted against comes along,
-      // instead of being rotated away into a device that never rings again.
-      expect(persisted.vapid.publicKey).toBe('LEGACYKEY')
-      expect(existsSync(legacyPath)).toBe(true)
+      const { ctx } = createContext()
+      apply(ctx)
+      expect(existsSync(dshHomePath('web-push', 'state.json'))).toBe(true)
     } finally {
       if (previousHome === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previousHome
-      rmSync(packageBase, { recursive: true, force: true })
     }
   })
 })

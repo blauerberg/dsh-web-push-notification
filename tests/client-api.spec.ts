@@ -1,6 +1,6 @@
+import { applicationServerKey } from '../src/application-server-key.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  applicationServerKey,
   reconcileSubscription,
   refreshServiceWorker,
   renewSubscription,

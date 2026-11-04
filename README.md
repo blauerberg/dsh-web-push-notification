@@ -94,20 +94,10 @@ VAPID keys, subscriptions, and suppression settings are stored in
 package directory. Each profile has its own state. Set `storagePath` in the
 plugin configuration to use another location.
 
-On first startup with no state at the default path, the plugin adopts a
-readable legacy state file belonging to the profile, including its keys,
-subscriptions, and suppression settings. The most recently modified
-profile-owned file takes precedence. Legacy candidates include the profile's
-`web-push.json` and bundle-local `web-push.json` files.
-
-If no readable profile-owned predecessor exists, the shared
-`$DSH_HOME/web-push/state.json` supplies fallback VAPID keys. Its subscriptions
-and settings are not imported because their owning profile is unknown. Devices
-using the inherited keys register again when their Notifications settings load.
-A device using a different key pair must enable Web Push again. Legacy files
-remain available for recovery; existing state at the configured path takes
-precedence over migration. Setting an explicit `storagePath` disables automatic
-legacy adoption.
+The plugin opens the configured state file, or creates new VAPID keys and an
+empty subscription list if that file is absent. To retain an installation's
+keys and subscriptions, place its profile-owned state file at the configured
+path before starting the profile. Back up this file before changing its location.
 
 ## Service Worker and endpoints
 
@@ -138,9 +128,10 @@ pnpm install --frozen-lockfile
 pnpm run check
 ```
 
-The check runs formatting, lint, typechecking, unit tests, and the distribution
-build. CI also checks against the latest stable Harness release, or the latest
-release candidate when no stable release exists.
+The check runs formatting, lint, typechecking, and a distribution build followed
+by the tests. Service Worker tests execute the built worker. CI runs these checks
+in separate jobs for the locked dependencies and the latest stable Harness
+release, or the latest release candidate when no stable release exists.
 
 ## Harness compatibility
 
