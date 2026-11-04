@@ -3,16 +3,18 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { WebPushSettingsSection } from '../src/client/WebPushSettingsSection.tsx'
 
 export async function renderSettings(): Promise<ReactTestRenderer> {
+  const props = {
+    close() {},
+    useWorkspaces() {
+      throw new Error('Settings do not read the workspace')
+    },
+    useWorkspaceAccess() {
+      throw new Error('Settings do not check workspace access')
+    },
+  }
   let panel!: ReactTestRenderer
   await act(async () => {
-    panel = create(
-      createElement(WebPushSettingsSection, {
-        close() {},
-        useWorkspaces() {
-          throw new Error('Settings do not read the workspace')
-        },
-      }),
-    )
+    panel = create(createElement(WebPushSettingsSection, props))
   })
   return panel
 }
