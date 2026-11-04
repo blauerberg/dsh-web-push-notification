@@ -11,7 +11,7 @@ import { PushStore } from '../src/store.ts'
 const webPush = vi.hoisted(() => ({
   generateVAPIDKeys: vi.fn(() => ({ publicKey: 'AQID', privateKey: 'BAUG' })),
   sendNotification: vi.fn(async () => ({})),
-  setVapidDetails: vi.fn(),
+  getVapidHeaders: vi.fn(),
 }))
 
 vi.mock('web-push', () => ({ default: webPush }))
