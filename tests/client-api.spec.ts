@@ -3,6 +3,7 @@ import {
   applicationServerKey,
   reconcileSubscription,
   refreshServiceWorker,
+  renewSubscription,
   saveSuppression,
   subscriptionUsesApplicationServerKey,
   waitForActiveServiceWorker,
@@ -80,6 +81,51 @@ describe('client Service Worker helpers', () => {
 
     await expect(reconcileSubscription(CONFIG, DEFAULT_NOTIFICATION_PREFERENCES)).resolves.toBe('registered')
     expect(fetch).toHaveBeenCalledWith('/__dsh/web-push/subscribe', expect.objectContaining({ method: 'POST' }))
+  })
+
+  it('replaces even a matching subscription when the user enables notifications', async () => {
+    const steps: string[] = []
+    const existing = {
+      endpoint: 'https://push.example.test/old',
+      options: { applicationServerKey: applicationServerKey(CONFIG.publicKey).buffer },
+      unsubscribe: async () => {
+        steps.push('unsubscribe in browser')
+        return true
+      },
+    }
+    const renewed = { endpoint: 'https://push.example.test/new', keys: { p256dh: 'AQID', auth: 'BAUG' } }
+    const subscribe = vi.fn(async () => {
+      steps.push('subscribe in browser')
+      return { toJSON: () => renewed }
+    })
+    const register = vi.fn(async () => ({
+      active: {},
+      pushManager: { getSubscription: async () => existing, subscribe },
+    }))
+    vi.stubGlobal('navigator', { serviceWorker: { register } })
+    const fetch = vi.fn(async (url: string) => {
+      steps.push(url)
+      return new Response('{}')
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    await renewSubscription(CONFIG, DEFAULT_NOTIFICATION_PREFERENCES)
+
+    expect(register).toHaveBeenCalledWith(CONFIG.serviceWorkerUrl, { scope: CONFIG.serviceWorkerScope })
+    expect(subscribe).toHaveBeenCalledWith({
+      userVisibleOnly: true,
+      applicationServerKey: applicationServerKey(CONFIG.publicKey),
+    })
+    expect(steps).toEqual([
+      '/__dsh/web-push/unsubscribe',
+      'unsubscribe in browser',
+      'subscribe in browser',
+      '/__dsh/web-push/subscribe',
+    ])
+    expect(fetch).toHaveBeenLastCalledWith(
+      '/__dsh/web-push/subscribe',
+      expect.objectContaining({ body: JSON.stringify({ ...renewed, preferences: DEFAULT_NOTIFICATION_PREFERENCES }) }),
+    )
   })
 
   it('posts the suppression policy and returns what the server kept', async () => {

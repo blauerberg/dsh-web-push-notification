@@ -1,10 +1,8 @@
-import type { PushSubscriptionJson, WebPushConfig } from '../contract.ts'
+import { WEB_PUSH_ROUTE_PREFIX, type PushSubscriptionJson, type WebPushConfig } from '../contract.ts'
 import type { NotificationPreferences, SuppressionSettings } from '../types.ts'
 
-const BASE = '/__dsh/web-push'
-
 export function loadConfig(): Promise<WebPushConfig> {
-  return request<WebPushConfig>(`${BASE}/config`, { method: 'GET' })
+  return request<WebPushConfig>(`${WEB_PUSH_ROUTE_PREFIX}/config`, { method: 'GET' })
 }
 
 /**
@@ -29,7 +27,7 @@ export function registerSubscription(
   preferences: NotificationPreferences,
 ): Promise<void> {
   const json = { ...(subscription.toJSON() as PushSubscriptionJson), preferences }
-  return request(`${BASE}/subscribe`, {
+  return request(`${WEB_PUSH_ROUTE_PREFIX}/subscribe`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(json),
@@ -38,7 +36,7 @@ export function registerSubscription(
 
 /** Store the account-wide suppression policy and return what the server kept. */
 export function saveSuppression(settings: SuppressionSettings): Promise<SuppressionSettings> {
-  return request(`${BASE}/settings`, {
+  return request(`${WEB_PUSH_ROUTE_PREFIX}/settings`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(settings),
@@ -46,20 +44,48 @@ export function saveSuppression(settings: SuppressionSettings): Promise<Suppress
 }
 
 export function unregisterSubscription(endpoint: string): Promise<void> {
-  return request(`${BASE}/unsubscribe`, {
+  return request(`${WEB_PUSH_ROUTE_PREFIX}/unsubscribe`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ endpoint }),
   }).then(() => undefined)
 }
 
+export async function getSubscription(config: WebPushConfig): Promise<PushSubscription | null> {
+  const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
+  return (await registration?.pushManager.getSubscription()) ?? null
+}
+
+export async function removeSubscription(subscription: PushSubscription): Promise<void> {
+  await unregisterSubscription(subscription.endpoint)
+  await subscription.unsubscribe()
+}
+
+export async function renewSubscription(config: WebPushConfig, preferences: NotificationPreferences): Promise<void> {
+  const registration = await navigator.serviceWorker.register(config.serviceWorkerUrl, {
+    scope: config.serviceWorkerScope,
+  })
+  await waitForActiveServiceWorker(registration)
+  const subscription = await registration.pushManager.getSubscription()
+  // The browser reports the key requested by the page, which can match stale
+  // config even when the Push service rejects it. An explicit enable therefore
+  // replaces the subscription instead of adopting the reported key.
+  if (subscription !== null) await removeSubscription(subscription)
+  const renewed = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: applicationServerKey(config.publicKey),
+  })
+  await registerSubscription(renewed, preferences)
+}
+
 export async function reconcileSubscription(
   config: WebPushConfig,
   preferences: NotificationPreferences,
+  signal?: AbortSignal,
 ): Promise<'missing' | 'mismatched' | 'registered'> {
-  const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
-  const subscription = await registration?.pushManager.getSubscription()
-  if (subscription === undefined || subscription === null) return 'missing'
+  const subscription = await getSubscription(config)
+  signal?.throwIfAborted()
+  if (subscription === null) return 'missing'
   if (!subscriptionUsesApplicationServerKey(subscription, config.publicKey)) return 'mismatched'
   await registerSubscription(subscription, preferences)
   return 'registered'
@@ -98,7 +124,7 @@ export function sendTest(message: TestNotificationRequest = {}): Promise<{
   readonly failed: number
   readonly subscriptionRegistered?: boolean
 }> {
-  return request(`${BASE}/test`, {
+  return request(`${WEB_PUSH_ROUTE_PREFIX}/test`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(message),

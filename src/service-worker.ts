@@ -1,3 +1,5 @@
+import { WEB_PUSH_ROUTE_PREFIX } from './contract.ts'
+
 export const SERVICE_WORKER_SOURCE: string = `
 const fallback = { title: 'DeepSeek Harness', body: 'A notification is ready.' };
 
@@ -120,8 +122,8 @@ self.addEventListener('pushsubscriptionchange', (event) => {
     try {
       let next = event.newSubscription;
       if (!next) {
-        const response = await fetch('/__dsh/web-push/config', { credentials: 'same-origin' });
-        if (!response.ok) throw new Error('/__dsh/web-push/config answered ' + response.status);
+        const response = await fetch('${WEB_PUSH_ROUTE_PREFIX}/config', { credentials: 'same-origin' });
+        if (!response.ok) throw new Error('${WEB_PUSH_ROUTE_PREFIX}/config answered ' + response.status);
         const config = await response.json();
         next = await self.registration.pushManager.subscribe({
           userVisibleOnly: true,
@@ -134,9 +136,9 @@ self.addEventListener('pushsubscriptionchange', (event) => {
       // to defaults, which would widen a "summary only" device back to full.
       const body = next.toJSON();
       if (replaced !== undefined) body.previousEndpoint = replaced;
-      await post('/__dsh/web-push/subscribe', body);
+      await post('${WEB_PUSH_ROUTE_PREFIX}/subscribe', body);
       if (replaced !== undefined && replaced !== next.endpoint) {
-        await post('/__dsh/web-push/unsubscribe', { endpoint: replaced });
+        await post('${WEB_PUSH_ROUTE_PREFIX}/unsubscribe', { endpoint: replaced });
       }
     } catch (_) {
       // A failed renewal leaves a stale record behind; the settings section

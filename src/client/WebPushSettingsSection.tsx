@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties } from 'react'
+import type { CSSProperties } from 'react'
 import {
   Button,
   IconChevronDownOutlineRegular,
@@ -6,28 +6,8 @@ import {
   type StateDotState,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import {
-  applicationServerKey,
-  loadConfig,
-  reconcileSubscription,
-  refreshServiceWorker,
-  registerSubscription,
-  saveSuppression,
-  sendTest,
-  unregisterSubscription,
-  waitForActiveServiceWorker,
-} from './api.ts'
-import { readPreferences, writePreferences } from './preferences.ts'
-import {
-  DEFAULT_NOTIFICATION_PREFERENCES,
-  DEFAULT_SUPPRESSION_SETTINGS,
-  type NotificationBodyMode,
-  type NotificationKind,
-  type NotificationPreferences,
-  type SuppressionSettings,
-} from '../types.ts'
-
-type Status = 'loading' | 'unsupported' | 'insecure-context' | 'default' | 'denied' | 'granted' | 'subscribed'
+import { useWebPushSettings, type Status } from './useWebPushSettings.ts'
+import { DEFAULT_SUPPRESSION_SETTINGS, type NotificationBodyMode, type NotificationKind } from '../types.ts'
 
 const EVENT_OPTIONS: readonly {
   readonly key: NotificationKind
@@ -119,183 +99,18 @@ const checkboxStyle: CSSProperties = {
 }
 
 export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>): JSX.Element {
-  const [status, setStatus] = useState<Status>('loading')
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState<string>()
-  const [preferences, setPreferences] = useState<NotificationPreferences>(() => ({
-    ...DEFAULT_NOTIFICATION_PREFERENCES,
-  }))
-  // Undefined until the config arrives: the controls stay disabled rather than
-  // showing defaults that are not what the server holds.
-  const [suppression, setSuppression] = useState<SuppressionSettings>()
-
-  const refresh = useCallback(async (currentPreferences: NotificationPreferences): Promise<void> => {
-    const capability = browserCapability()
-    if (capability !== undefined) {
-      setStatus(capability)
-      return
-    }
-    try {
-      const config = await loadConfig()
-      setSuppression(config.suppression)
-      await refreshServiceWorker(config)
-      const subscriptionState = await reconcileSubscription(config, currentPreferences)
-      if (subscriptionState === 'mismatched') {
-        setStatus(Notification.permission)
-        setMessage('The host Web Push key changed. Enable notifications again to renew this subscription.')
-        return
-      }
-      setStatus(subscriptionState === 'registered' ? 'subscribed' : Notification.permission)
-    } catch (error) {
-      setStatus(Notification.permission)
-      setMessage(error instanceof Error ? error.message : String(error))
-    }
-  }, [])
-
-  useEffect(() => {
-    const storedPreferences = readPreferences()
-    setPreferences(storedPreferences)
-    void refresh(storedPreferences)
-  }, [refresh])
-
-  const enable = async (): Promise<void> => {
-    setBusy(true)
-    setMessage(undefined)
-    try {
-      if (browserCapability() !== undefined) throw new Error('Web Push is unavailable in this browser context.')
-      let permission = Notification.permission
-      if (permission === 'default') permission = await Notification.requestPermission()
-      if (permission !== 'granted') {
-        setStatus(permission)
-        throw new Error(
-          permission === 'denied'
-            ? 'Notifications are blocked for this site.'
-            : 'Notification permission was not granted.',
-        )
-      }
-      const config = await loadConfig()
-      const registration = await navigator.serviceWorker.register(config.serviceWorkerUrl, {
-        scope: config.serviceWorkerScope,
-      })
-      await waitForActiveServiceWorker(registration)
-      const subscription = await registration.pushManager.getSubscription()
-      // Renew rather than adopt: the key a browser reports for an existing
-      // subscription is only what this page last asked for, and it agrees with a
-      // stale config as readily as with the current one, while the Push service
-      // binds the subscription to the key it actually saw. A subscription the
-      // host refuses is only ever repaired by making a new one, so an explicit
-      // enable always makes one.
-      if (subscription !== null) {
-        await unregisterSubscription(subscription.endpoint)
-        await subscription.unsubscribe()
-      }
-      const renewed = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: applicationServerKey(config.publicKey),
-      })
-      await registerSubscription(renewed, preferences)
-      setStatus('subscribed')
-      setMessage('Web Push is enabled.')
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const disable = async (): Promise<void> => {
-    setBusy(true)
-    setMessage(undefined)
-    try {
-      const config = await loadConfig()
-      const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
-      const subscription = await registration?.pushManager.getSubscription()
-      if (subscription !== undefined && subscription !== null) {
-        await unregisterSubscription(subscription.endpoint)
-        await subscription.unsubscribe()
-      }
-      setStatus(Notification.permission)
-      setMessage('Web Push is disabled.')
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const test = async (): Promise<void> => {
-    setBusy(true)
-    setMessage(undefined)
-    try {
-      const config = await loadConfig()
-      const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
-      const subscription = await registration?.pushManager.getSubscription()
-      const result = await sendTest({ endpoint: subscription?.endpoint })
-      const counts = `Test sent: ${String(result.sent)}, removed: ${String(result.removed)}, failed: ${String(result.failed)}.`
-      const missing = subscription === undefined || subscription === null || result.subscriptionRegistered === false
-      if (missing) setStatus(Notification.permission)
-      setMessage(
-        missing
-          ? `${counts} This device is not registered with the host. Enable Web Push again to renew.`
-          : result.removed > 0
-            ? `${counts} An expired subscription was removed. Re-enable Web Push on the affected device.`
-            : counts,
-      )
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const updatePreference = async <K extends keyof NotificationPreferences>(
-    key: K,
-    value: NotificationPreferences[K],
-  ): Promise<void> => {
-    const previous = preferences
-    const next = { ...preferences, [key]: value }
-    setPreferences(next)
-    writePreferences(next)
-    if (status !== 'subscribed') return
-    setBusy(true)
-    setMessage(undefined)
-    try {
-      const config = await loadConfig()
-      const registration = await navigator.serviceWorker.getRegistration(config.serviceWorkerScope)
-      const subscription = await registration?.pushManager.getSubscription()
-      if (subscription === undefined || subscription === null)
-        throw new Error('The Web Push subscription is no longer available.')
-      await registerSubscription(subscription, next)
-      setMessage('Notification preferences saved.')
-    } catch (error) {
-      setPreferences(previous)
-      writePreferences(previous)
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /**
-   * These two are account settings, not per-device ones, so they are stored by
-   * the server and saved whether or not this browser holds a subscription. The
-   * server echoes what it kept, which is what the panel then shows.
-   */
-  const updateSuppression = async (next: SuppressionSettings): Promise<void> => {
-    const previous = suppression
-    setSuppression(next)
-    setBusy(true)
-    setMessage(undefined)
-    try {
-      setSuppression(await saveSuppression(next))
-      setMessage('Notification timing saved.')
-    } catch (error) {
-      setSuppression(previous)
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const {
+    status,
+    busy,
+    message,
+    preferences,
+    suppression,
+    enable,
+    disable,
+    test,
+    updatePreference,
+    updateSuppression,
+  } = useWebPushSettings()
 
   const enabledDisabled =
     busy || status === 'loading' || status === 'unsupported' || status === 'insecure-context' || status === 'denied'
@@ -494,13 +309,6 @@ export function WebPushSettingsSection(_props: PropsRuntime<'settings.section'>)
       )}
     </div>
   )
-}
-
-function browserCapability(): Exclude<Status, 'loading' | 'default' | 'denied' | 'granted' | 'subscribed'> | undefined {
-  if (typeof window === 'undefined' || !window.isSecureContext) return 'insecure-context'
-  if (typeof Notification === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window))
-    return 'unsupported'
-  return undefined
 }
 
 function statusState(status: Status): Exclude<StateDotState, 'idle'> {
